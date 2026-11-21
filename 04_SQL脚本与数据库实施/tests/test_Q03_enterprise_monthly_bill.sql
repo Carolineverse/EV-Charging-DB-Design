@@ -20,11 +20,13 @@ DECLARE @StationId VARCHAR(20) = 'Q03ST' + @Token;
 DECLARE @PileId VARCHAR(20) = 'Q03PL' + @Token;
 DECLARE @GunId VARCHAR(20) = 'Q03GN' + @Token;
 DECLARE @EnterpriseId VARCHAR(20) = 'Q03E' + @Token;
+DECLARE @ZeroEnterpriseId VARCHAR(20) = 'Q03Z' + @Token;
 DECLARE @FleetMemberId VARCHAR(20) = 'Q03FM' + @Token;
 DECLARE @VehicleId VARCHAR(20) = 'Q03VE' + @Token;
 DECLARE @CardId VARCHAR(20) = 'Q03CA' + @Token;
 DECLARE @QuotaId VARCHAR(20) = 'Q03QU' + @Token;
 DECLARE @SettlementId VARCHAR(20) = 'Q03ES' + @Token;
+DECLARE @ZeroSettlementId VARCHAR(20) = 'Q03ZS' + @Token;
 DECLARE @BindingId BIGINT;
 DECLARE @InMonthOrderId BIGINT;
 DECLARE @WrongMonthOrderId BIGINT;
@@ -113,7 +115,9 @@ BEGIN TRY
     VALUES
         (@SettlementId, @EnterpriseId, '2026-10-01', 2, 2.000, 10.00,
          '2026-11-02T09:00:00', '2026-11-02T10:00:00', '2026-11-03T10:00:00',
-         'Q03-RECEIPT-' + @Token);
+         'Q03-RECEIPT-' + @Token),
+        (@ZeroSettlementId, @ZeroEnterpriseId, '2026-10-01', 0, 0.000, 0.00,
+         '2026-11-02T09:00:00', NULL, NULL, NULL);
 
     INSERT INTO dbo.EnterpriseSettlementDetail
         (enterprise_settlement_id, order_id, fleet_member_id, vehicle_id,
@@ -149,29 +153,40 @@ BEGIN TRY
            e.enterprise_id,
            e.billing_period_start,
            e.total_order_count,
-           ds.detail_order_count,
+           COALESCE(ds.detail_order_count, 0),
            e.total_energy_kwh,
-           ds.detail_energy_kwh,
+           COALESCE(ds.detail_energy_kwh, 0),
            e.total_amount,
-           ds.detail_amount,
-           ds.order_end_in_period_count,
-           ds.paid_order_count,
+           COALESCE(ds.detail_amount, 0),
+           COALESCE(ds.order_end_in_period_count, 0),
+           COALESCE(ds.paid_order_count, 0),
            CASE WHEN e.paid_at IS NOT NULL THEN 'PAID'
                 WHEN e.confirmed_at IS NOT NULL THEN 'CONFIRMED'
                 ELSE 'GENERATED' END
     FROM dbo.EnterpriseSettlement AS e
-    INNER JOIN detail_summary AS ds
+    LEFT JOIN detail_summary AS ds
         ON ds.enterprise_settlement_id = e.enterprise_settlement_id
-    WHERE e.enterprise_settlement_id = @SettlementId;
+    WHERE e.enterprise_settlement_id IN (@SettlementId, @ZeroSettlementId);
 
     IF NOT EXISTS
        (SELECT 1 FROM @Actual
-        WHERE header_order_count = 2 AND detail_order_count = 2
+        WHERE enterprise_settlement_id = @SettlementId
+          AND header_order_count = 2 AND detail_order_count = 2
           AND header_energy_kwh = 2.000 AND detail_energy_kwh = 2.000
           AND header_amount = 10.00 AND detail_amount = 10.00
           AND order_end_in_period_count = 1 AND paid_order_count = 2
           AND settlement_state = 'PAID')
         THROW 52201, 'Q03 monthly aggregate or period check is incorrect.', 1;
+
+    IF NOT EXISTS
+       (SELECT 1 FROM @Actual
+        WHERE enterprise_settlement_id = @ZeroSettlementId
+          AND header_order_count = 0 AND detail_order_count = 0
+          AND header_energy_kwh = 0 AND detail_energy_kwh = 0
+          AND header_amount = 0 AND detail_amount = 0
+          AND order_end_in_period_count = 0 AND paid_order_count = 0
+          AND settlement_state = 'GENERATED')
+        THROW 52202, 'Q03 omitted the zero-detail settlement or returned nonzero detail totals.', 1;
 
     SELECT enterprise_id, billing_period_start,
            header_order_count, detail_order_count,

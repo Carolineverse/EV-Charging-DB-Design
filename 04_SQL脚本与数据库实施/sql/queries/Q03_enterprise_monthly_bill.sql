@@ -27,13 +27,13 @@ SELECT e.enterprise_settlement_id,
        e.enterprise_id,
        e.billing_period_start,
        e.total_order_count AS header_order_count,
-       ds.detail_order_count,
+       COALESCE(ds.detail_order_count, 0) AS detail_order_count,
        e.total_energy_kwh AS header_energy_kwh,
-       ds.detail_energy_kwh,
+       COALESCE(ds.detail_energy_kwh, 0) AS detail_energy_kwh,
        e.total_amount AS header_amount,
-       ds.detail_amount,
-       ds.order_end_in_period_count,
-       ds.paid_order_count,
+       COALESCE(ds.detail_amount, 0) AS detail_amount,
+       COALESCE(ds.order_end_in_period_count, 0) AS order_end_in_period_count,
+       COALESCE(ds.paid_order_count, 0) AS paid_order_count,
        CASE WHEN e.paid_at IS NOT NULL THEN 'PAID'
             WHEN e.confirmed_at IS NOT NULL THEN 'CONFIRMED'
             ELSE 'GENERATED' END AS settlement_state,
@@ -41,7 +41,7 @@ SELECT e.enterprise_settlement_id,
        e.paid_at,
        e.payment_reference
 FROM dbo.EnterpriseSettlement AS e
-INNER JOIN detail_summary AS ds
+LEFT JOIN detail_summary AS ds
     ON ds.enterprise_settlement_id = e.enterprise_settlement_id
 WHERE e.billing_period_start = @BillingPeriodStart
   AND (@EnterpriseId IS NULL OR e.enterprise_id = @EnterpriseId)

@@ -230,11 +230,16 @@ LEFT JOIN refund_by_order AS r ON r.order_id = o.order_id
 LEFT JOIN enterprise_receipt AS e ON e.order_id = o.order_id
 ), source_contract AS
 (
-    SELECT base_rows.*,
+    SELECT base_rows.order_id,
            base_rows.opening_station_id AS station_id,
+           base_rows.settlement_source,
            base_rows.ended_at_snapshot AS ended_at,
            base_rows.settled_at_snapshot AS settled_at,
            base_rows.energy_snapshot AS energy_kwh,
+           base_rows.electricity_base,
+           base_rows.service_base,
+           base_rows.minimum_adjustment,
+           base_rows.refund_state_snapshot,
            CONVERT(BIT, CASE
                WHEN base_rows.eligibility_status = 'ELIGIBLE' THEN 1
                WHEN base_rows.eligibility_status = 'REVIEW_REQUIRED'
@@ -246,7 +251,32 @@ LEFT JOIN enterprise_receipt AS e ON e.order_id = o.order_id
                WHEN base_rows.eligibility_status = 'REVIEW_REQUIRED'
                 AND base_rows.enterprise_receipt_verified = 1 THEN NULL
                ELSE COALESCE(base_rows.eligibility_reason, base_rows.eligibility_status)
-           END AS unsettleable_reason
+           END AS unsettleable_reason,
+           base_rows.opening_station_id,
+           base_rows.ended_at_snapshot,
+           base_rows.energy_snapshot,
+           base_rows.settled_at_snapshot,
+           base_rows.eligibility_checked_at,
+           base_rows.gross_amount,
+           base_rows.discount_amount,
+           base_rows.payable_amount,
+           base_rows.paid_amount,
+           base_rows.payment_record_count,
+           base_rows.payment_amount,
+           base_rows.order_refund_amount,
+           base_rows.payment_refund_amount,
+           base_rows.refund_record_count,
+           base_rows.successful_refund_amount,
+           base_rows.processing_refund_amount,
+           base_rows.failed_refund_amount,
+           base_rows.cancelled_refund_amount,
+           base_rows.enterprise_refund_check_required,
+           base_rows.enterprise_receipt_verified,
+           base_rows.eligibility_reason,
+           base_rows.eligibility_status,
+           base_rows.enterprise_receipt_amount,
+           base_rows.enterprise_receipt_billing_period_start,
+           base_rows.enterprise_receipt_paid_at
     FROM
     (
         SELECT * FROM source_rows

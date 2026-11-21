@@ -29,8 +29,10 @@ DECLARE @PileId VARCHAR(20) = 'B_DEMO_PILE01';
 DECLARE @GunId VARCHAR(20) = 'B_DEMO_GUN01';
 DECLARE @UserId VARCHAR(20) = 'B_DEMO_USER01';
 DECLARE @RuleVersionId BIGINT = 920260101;
+DECLARE @RefundRuleVersionId BIGINT = 920260102;
 DECLARE @NoticeAccountId BIGINT;
 DECLARE @BillingRuleId BIGINT;
+DECLARE @RefundBillingRuleId BIGINT;
 DECLARE @NormalOrderId BIGINT;
 DECLARE @OutsideOrderId BIGINT;
 DECLARE @RefundOrderId BIGINT;
@@ -88,8 +90,40 @@ IF NOT EXISTS (
         (rule_version_id, station_id, enterprise_id, free_minutes,
          minimum_amount, effective_from, effective_to, status)
     VALUES
-        (@RuleVersionId, @StationId, NULL, 0, 0,
-         '2026-01-01T00:00:00', NULL, 'ACTIVE');
+        (@RuleVersionId, @StationId, NULL, 0, 5.00,
+         '2026-01-01T00:00:00', '2026-10-20T00:00:00', 'ACTIVE');
+
+IF EXISTS
+(
+    SELECT 1 FROM dbo.BillingRuleVersion
+    WHERE rule_version_id = @RuleVersionId
+      AND (station_id <> @StationId OR enterprise_id IS NOT NULL
+           OR minimum_amount <> 5.00 OR effective_from <> '2026-01-01T00:00:00'
+           OR effective_to <> '2026-10-20T00:00:00' OR status <> 'ACTIVE')
+)
+    THROW 51110, 'B demo rule version 920260101 has unexpected facts; rebuild EV_B_TEST.', 1;
+
+IF NOT EXISTS
+(
+    SELECT 1 FROM dbo.BillingRuleVersion
+    WHERE rule_version_id = @RefundRuleVersionId
+)
+    INSERT INTO dbo.BillingRuleVersion
+        (rule_version_id, station_id, enterprise_id, free_minutes,
+         minimum_amount, effective_from, effective_to, status)
+    VALUES
+        (@RefundRuleVersionId, @StationId, NULL, 0, 8.00,
+         '2026-10-20T00:00:00', NULL, 'ACTIVE');
+
+IF EXISTS
+(
+    SELECT 1 FROM dbo.BillingRuleVersion
+    WHERE rule_version_id = @RefundRuleVersionId
+      AND (station_id <> @StationId OR enterprise_id IS NOT NULL
+           OR minimum_amount <> 8.00 OR effective_from <> '2026-10-20T00:00:00'
+           OR effective_to IS NOT NULL OR status <> 'ACTIVE')
+)
+    THROW 51111, 'B demo rule version 920260102 has unexpected facts; rebuild EV_B_TEST.', 1;
 
 IF NOT EXISTS (
     SELECT 1 FROM dbo.BillingRule
@@ -102,6 +136,18 @@ IF NOT EXISTS (
     VALUES
         (@RuleVersionId, N'平', '00:00:00', '23:59:00', 2.0000, 1.0000);
 
+IF NOT EXISTS
+(
+    SELECT 1 FROM dbo.BillingRule
+    WHERE rule_version_id = @RefundRuleVersionId
+      AND period_start_time = '00:00:00'
+)
+    INSERT INTO dbo.BillingRule
+        (rule_version_id, period_type, period_start_time, period_end_time,
+         electricity_price, service_price)
+    VALUES
+        (@RefundRuleVersionId, N'平', '00:00:00', '23:59:00', 2.0000, 1.0000);
+
 SELECT @BillingRuleId = billing_rule_id
 FROM dbo.BillingRule
 WHERE rule_version_id = @RuleVersionId
@@ -109,6 +155,14 @@ WHERE rule_version_id = @RuleVersionId
 
 IF @BillingRuleId IS NULL
     THROW 51105, 'Could not resolve the B demo billing rule.', 1;
+
+SELECT @RefundBillingRuleId = billing_rule_id
+FROM dbo.BillingRule
+WHERE rule_version_id = @RefundRuleVersionId
+  AND period_start_time = '00:00:00';
+
+IF @RefundBillingRuleId IS NULL
+    THROW 51112, 'Could not resolve the B demo refund billing rule.', 1;
 
 IF (SELECT COUNT(*) FROM dbo.ChargingOrder WHERE user_id = @UserId AND gun_id = @GunId
     AND created_at = '2026-10-01T00:00:01') > 1
@@ -180,7 +234,7 @@ BEGIN
          '2026-10-20T11:00:00', '2026-10-20T12:00:00', 2.000, 'PAID',
          8.00, 2.00, 0.00, 8.00, 1.00,
          '2026-10-01T00:00:03', '2026-10-25T12:00:00', @StationId,
-         '2026-10-20T12:00:05', @RuleVersionId,
+         '2026-10-20T12:00:05', @RefundRuleVersionId,
          '2026-10-20T12:00:04', '2026-10-20T12:00:03');
     SET @RefundOrderId = CONVERT(BIGINT, SCOPE_IDENTITY());
 END;
@@ -206,7 +260,7 @@ IF NOT EXISTS (SELECT 1 FROM dbo.OrderFeeDetail WHERE order_id = @RefundOrderId
     INSERT INTO dbo.OrderFeeDetail
         (order_id, billing_rule_id, segment_start, segment_end,
          segment_energy_kwh, free_service_fee)
-    VALUES (@RefundOrderId, @BillingRuleId, '2026-10-20T11:00:00',
+    VALUES (@RefundOrderId, @RefundBillingRuleId, '2026-10-20T11:00:00',
             '2026-10-20T12:00:00', 2.000, 0.00);
 
 IF NOT EXISTS (SELECT 1 FROM dbo.PaymentRecord WHERE pay_channel = 'OTHER'

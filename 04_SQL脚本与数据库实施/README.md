@@ -103,7 +103,7 @@ sqlcmd -S "localhost\SQLEXPRESS" -E -d EV_B_TEST -C -b -f i:65001 -i .\tests\tes
 
 ## V09 A2 企业月结明细
 
-同一 `48_A2_views.sql` 还创建 `dbo.v_A2EnterpriseMonthlyDetail`。视图输出企业月结主表、订单明细及订单事实，并提供账期是否等于实际 `ChargingOrder.end_time` 所在月、电量/金额快照是否匹配的标记；企业编号直接保留，不依赖 R 档案表。
+同一 `48_A2_views.sql` 还创建 `dbo.v_A2EnterpriseMonthlyDetail`。视图以实际订单明细为粒度，输出企业月结主表、订单明细及订单事实，并提供账期是否等于实际 `ChargingOrder.end_time` 所在月、电量/金额快照是否匹配的标记；企业编号直接保留，不依赖 R 档案表。没有明细的零订单月结不会出现在此明细视图中；需要查看零汇总账单时使用 Q03 企业月结汇总查询。
 
 ```powershell
 Set-Location '04_SQL脚本与数据库实施'
@@ -125,7 +125,7 @@ sqlcmd -S "localhost\SQLEXPRESS" -E -d EV_B_TEST -C -b -f i:65001 -i .\tests\tes
 
 ## Q03 企业月结汇总
 
-`sql/queries/Q03_enterprise_monthly_bill.sql` 通过 `EnterpriseSettlement`、`EnterpriseSettlementDetail`、`ChargingOrder` 汇总月结快照、明细总量、确认/付款状态，并核对订单实际结束月。当前 TEST 未安装 R 的 `EnterpriseProfile`，查询使用 `enterprise_id` 作为企业标识；待 R 表就绪后可补企业名称展示。
+`sql/queries/Q03_enterprise_monthly_bill.sql` 通过 `EnterpriseSettlement`、`EnterpriseSettlementDetail`、`ChargingOrder` 汇总月结快照、明细总量、确认/付款状态，并核对订单实际结束月。查询以月结账头为主表左联明细汇总，因此零订单月份生成的 0 汇总账单仍显示，明细数、电量和金额按 0 展示。当前 TEST 未安装 R 的 `EnterpriseProfile`，查询使用 `enterprise_id` 作为企业标识；待 R 表就绪后可补企业名称展示。
 
 ```powershell
 Set-Location '04_SQL脚本与数据库实施'

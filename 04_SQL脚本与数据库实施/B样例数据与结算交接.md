@@ -12,7 +12,7 @@
 | 充电枪 | `B_DEMO_GUN01` | 供三笔非重叠会话使用 |
 | 车主 | `B_DEMO_USER01` | 由 D 在 R 线创建/提供可查询的 UserProfile |
 | 场站通知账号 | `B_DEMO_R01` | 由 D 提供 R01 SysAccount 用户名；种子脚本按用户名取 account_id |
-| 计费版本 | `920260101` | B 固定的测试版本号，不使用正式环境编号 |
+| 计费版本 | `920260101` / `920260102` | B 固定的测试版本号，不使用正式环境编号；前者最低金额 5 元，后者最低金额 8 元 |
 | 结算账期 | `202610` | 2026 年 10 月；需 D 提供该站点 R03 分派与 20% 费率 |
 
 ## 订单样例
@@ -25,9 +25,11 @@
 
 `ChargingOrder.order_id` 是 IDENTITY，不包含订单业务编号列。上表的业务标识只用于交接；安装种子后，以 SQL 输出的 `order_id` 作为数据库关联键。三笔订单的 `created_at` 使用固定测试标记时间以便种子脚本重跑时识别，不应复用到其他演示数据。
 
+为使起步补差符合 `A = max(minimum_amount - E - S, 0)`，正常单使用最低金额 5 元版本（2+1+2=5）；退款单使用最低金额 8 元版本（4+2+2=8）。`920260101` 于 `2026-10-20 00:00` 失效，`920260102` 从该时刻生效，因此两个冻结版本的有效期不重叠。退款订单开始于第二版本生效后。账期外样例在 9 月结束，但其冻结版本仍覆盖它的 9 月启动时间。
+
 ## D 视图调用契约与 SettlementDetail 来源字段
 
-`sql/views/47_B_order_settlement_source.sql` 创建 `dbo.v_OrderSettlementSource`，保留 B 审计字段，并兼容 D `d_generate.sql` 头部声明的 12 列调用契约：
+`sql/views/47_B_order_settlement_source.sql` 创建 `dbo.v_OrderSettlementSource`。D 的 12 列调用契约按声明顺序放在视图输出的前 12 列，B 审计字段追加在其后：
 
 `order_id, station_id, settlement_source, ended_at, settled_at, energy_kwh, electricity_base, service_base, minimum_adjustment, refund_state_snapshot, is_settleable, unsettleable_reason`
 
@@ -52,6 +54,7 @@
 - D 需先在 R 线准备 `B_DEMO_USER01` 对应的 `UserProfile`，并提供用户名为 `B_DEMO_R01` 的有效 R01 `SysAccount`。脚本不会创建或伪造 R 线记录。
 - 需先在 `EV_B_TEST` 安装 A1、B 表及已就绪的 A1/B 外键；脚本不会创建 D/C 表或占位对象。
 - `v_OrderSettlementSource` 暴露 D `d_generate.sql` 声明的 12 列调用契约并对齐物理设计 `SettlementDetail` 快照；D 仍须用真实整合样例核验资格、R03 分派和账期规则。
+- D 应按列名读取接口；前 12 列也保持与契约相同的顺序，但写入时仍应显式列出目标列，避免 `SELECT *` 对表结构变化敏感。
 - D 需为场站 `B_DEMO_ST01` 准备 `202610` 账期的 R03 分派和 20% 费率。费率必须在 D 的费率表中落地后，运营商应结金额才能完成端到端复核。
 - `ChargingMeterSample` 的 report_id 依赖 C 的 `DeviceReport`。本批订单先提供电量与费用段供结算来源联调；采样报文的 START/END/重复投递样例待 C 提供真实 DeviceReport 父记录后另行补充。
 - 种子脚本只面向 `EV_B_TEST`，会提交样例数据；如需重置，请重建空测试库后按 README 完整安装，不要在开发库或共享库运行。
@@ -61,3 +64,10 @@
 1. 查询 `202610` 的结算来源时，正常订单应恰好一行且合格，账期外订单应排除并说明原因，退款订单应带出成功退款金额 `1.00`。
 2. 正常样例核对：`2.00 + 1.00 + 2.00 - 3.00 = 2.00` 用户实付；平台服务费 `3.00 × 20% = 0.60`；运营商应结 `2.00 + 1.00 + 2.00 - 0.60 = 4.40`。
 3. 源视图必须按 `order_id` 至多返回一行。退款样例的最终结算调整需与 D 的账期/退款规则共同确认后记录。
+
+## 本轮修正与验证状态（2026-11-21）
+
+- Q03 已使用 `LEFT JOIN` 保留零明细月结，`test_Q03_enterprise_monthly_bill.sql` 在 `EV_B_TEST` 通过；普通月结与零明细账单均返回预期汇总。
+- V04 前 12 列按 D 契约顺序输出；`test_v_OrderSettlementSource.sql` 在 `EV_B_TEST` 通过，并验证字段名与列序。
+- 全套 `pytest tests -q`：22 项通过。SQL 事务测试均自行回滚。
+- 50 号种子尚未执行：当前 `EV_B_TEST` 不存在 R 的 `SysAccount` / `UserProfile` 表，固定计费版本与样例订单标记也尚不存在。待 D 准备正式 R 父记录后，再按本文件前置条件执行；不创建占位表或跳过外键。

@@ -42,26 +42,27 @@ DECLARE @EnterpriseVerifiedReceiptOrderId BIGINT;
 DECLARE @BindingId BIGINT;
 DECLARE @PaymentId BIGINT;
 DECLARE @ExpectedCount INT = 6;
-DECLARE @MissingContractColumns INT;
+DECLARE @ContractOrderMismatches INT;
 
 BEGIN TRY
     BEGIN TRANSACTION;
 
-    DECLARE @RequiredDColumns TABLE (column_name SYSNAME PRIMARY KEY);
-    INSERT INTO @RequiredDColumns (column_name)
+    DECLARE @RequiredDColumns TABLE (ordinal INT PRIMARY KEY, column_name SYSNAME NOT NULL);
+    INSERT INTO @RequiredDColumns (ordinal, column_name)
     VALUES
-        (N'order_id'), (N'station_id'), (N'settlement_source'), (N'ended_at'),
-        (N'settled_at'), (N'energy_kwh'), (N'electricity_base'), (N'service_base'),
-        (N'minimum_adjustment'), (N'refund_state_snapshot'), (N'is_settleable'),
-        (N'unsettleable_reason');
-    SELECT @MissingContractColumns = COUNT(*)
+        (1, N'order_id'), (2, N'station_id'), (3, N'settlement_source'), (4, N'ended_at'),
+        (5, N'settled_at'), (6, N'energy_kwh'), (7, N'electricity_base'), (8, N'service_base'),
+        (9, N'minimum_adjustment'), (10, N'refund_state_snapshot'), (11, N'is_settleable'),
+        (12, N'unsettleable_reason');
+    SELECT @ContractOrderMismatches = COUNT(*)
     FROM @RequiredDColumns AS required_column
     LEFT JOIN sys.columns AS actual_column
       ON actual_column.object_id = OBJECT_ID(N'dbo.v_OrderSettlementSource')
+     AND actual_column.column_id = required_column.ordinal
      AND actual_column.name = required_column.column_name
     WHERE actual_column.column_id IS NULL;
-    IF @MissingContractColumns <> 0
-        THROW 51809, 'V04 does not expose the required D settlement source columns.', 1;
+    IF @ContractOrderMismatches <> 0
+        THROW 51809, 'V04 D settlement source columns are missing or out of contract order.', 1;
 
     INSERT INTO dbo.Operator (operator_id, operator_name)
     VALUES (@OperatorId, N'V04测试运营商');
