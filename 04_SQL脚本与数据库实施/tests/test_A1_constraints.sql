@@ -1,11 +1,14 @@
 -- A1 核心约束回归测试（SQL Server / SSMS）
 -- 覆盖：Operator CHECK、ChargingGun UNIQUE、ChargingPile FK、DeviceStatusHistory CHECK（两种非法情况）
--- 前提：A1 七张表、七个内部外键已安装；在空闲的开发/测试库执行。
+-- 前提：A1 七张表、七个内部外键已安装；只允许在 EV_B_TEST 执行。
 -- 安全：所有成功插入的夹具数据均在同一事务中回滚；不在生产库运行。
--- 执行方式：先在 SSMS 连接目标库，并选择 EV_B_DEV（或 EV_B_TEST）；不要把 USE 固定在脚本里。
+-- 执行方式：先在 SSMS 选择 EV_B_TEST；不要把 USE 固定在脚本里。
 
 SET NOCOUNT ON;
 SET XACT_ABORT OFF; -- 允许在 TRY/CATCH 中捕获预期的约束冲突
+
+IF DB_NAME() <> N'EV_B_TEST'
+    THROW 51100, 'This test must run in EV_B_TEST.', 1;
 
 DECLARE @passed INT = 0;
 DECLARE @expected INT = 5;
