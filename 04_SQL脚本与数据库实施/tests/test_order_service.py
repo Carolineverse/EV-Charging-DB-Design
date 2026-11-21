@@ -5,6 +5,7 @@ from threading import Barrier
 import pytest
 from sqlalchemy import text
 
+from evplatform.order_queries import list_orders_page
 from evplatform.orders import GunOccupied, GunUnavailable, open_personal_order
 
 
@@ -117,3 +118,38 @@ def test_concurrent_open_order_allows_only_one_order(session_factory, engine, bu
         ).scalar_one()
 
     assert active_count == 1
+
+
+def test_order_page_uses_created_time_then_order_id_as_stable_sort(
+    session_factory, engine, business_fixture
+):
+    created_ids = []
+    with engine.begin() as connection:
+        for _ in range(3):
+            created_ids.append(
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO dbo.ChargingOrder
+                            (order_type, user_id, gun_id, opening_station_id, status, created_at)
+                        OUTPUT INSERTED.order_id
+                        VALUES ('PERSONAL', :user_id, :gun_id, :station_id,
+                                'CANCELLED', '2026-11-01T12:00:00');
+                        """
+                    ),
+                    {
+                        "user_id": business_fixture["user_id"],
+                        "gun_id": business_fixture["gun_id"],
+                        "station_id": business_fixture["station_id"],
+                    },
+                ).scalar_one()
+            )
+
+    with session_factory.begin() as session:
+        first = list_orders_page(session, user_id=business_fixture["user_id"], page=1, page_size=2)
+        second = list_orders_page(session, user_id=business_fixture["user_id"], page=2, page_size=2)
+
+    expected = sorted(created_ids, reverse=True)
+    assert first.total == second.total == 3
+    assert [order.order_id for order in first.items] == expected[:2]
+    assert [order.order_id for order in second.items] == expected[2:]

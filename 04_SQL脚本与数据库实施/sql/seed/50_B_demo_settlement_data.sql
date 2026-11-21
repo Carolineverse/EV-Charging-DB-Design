@@ -7,9 +7,11 @@ SET XACT_ABORT ON;
 IF DB_NAME() <> N'EV_B_TEST'
     THROW 51100, 'B demo seed must run in EV_B_TEST.', 1;
 
-IF OBJECT_ID(N'dbo.SysAccount', N'U') IS NULL
+IF OBJECT_ID(N'dbo.SysRole', N'U') IS NULL
+   OR OBJECT_ID(N'dbo.SysAccount', N'U') IS NULL
    OR OBJECT_ID(N'dbo.UserProfile', N'U') IS NULL
-    THROW 51101, 'Install the R module and provision B demo account/user first.', 1;
+   OR OBJECT_ID(N'dbo.EnterpriseProfile', N'U') IS NULL
+    THROW 51101, 'Install the official R core tables and role seed before loading B demo data.', 1;
 
 IF OBJECT_ID(N'dbo.Operator', N'U') IS NULL
    OR OBJECT_ID(N'dbo.ChargingStation', N'U') IS NULL
@@ -28,9 +30,15 @@ DECLARE @StationId VARCHAR(20) = 'B_DEMO_ST01';
 DECLARE @PileId VARCHAR(20) = 'B_DEMO_PILE01';
 DECLARE @GunId VARCHAR(20) = 'B_DEMO_GUN01';
 DECLARE @UserId VARCHAR(20) = 'B_DEMO_USER01';
+DECLARE @EnterpriseId VARCHAR(20) = 'B_DEMO_ENT01';
 DECLARE @RuleVersionId BIGINT = 920260101;
 DECLARE @RefundRuleVersionId BIGINT = 920260102;
+DECLARE @R01RoleId TINYINT;
+DECLARE @PersonalRoleId TINYINT;
+DECLARE @EnterpriseRoleId TINYINT;
 DECLARE @NoticeAccountId BIGINT;
+DECLARE @UserAccountId BIGINT;
+DECLARE @EnterpriseAccountId BIGINT;
 DECLARE @BillingRuleId BIGINT;
 DECLARE @RefundBillingRuleId BIGINT;
 DECLARE @NormalOrderId BIGINT;
@@ -40,17 +48,60 @@ DECLARE @NormalPaymentId BIGINT;
 DECLARE @OutsidePaymentId BIGINT;
 DECLARE @RefundPaymentId BIGINT;
 
-SELECT @NoticeAccountId = account_id
-FROM dbo.SysAccount
-WHERE username = 'B_DEMO_R01';
+SELECT @R01RoleId = role_id FROM dbo.SysRole WHERE role_code = 'R01';
+SELECT @PersonalRoleId = role_id FROM dbo.SysRole WHERE role_code = 'R04';
+SELECT @EnterpriseRoleId = role_id FROM dbo.SysRole WHERE role_code = 'R05';
 
-IF @NoticeAccountId IS NULL
-    THROW 51103, 'D must provision the B_DEMO_R01 SysAccount before seeding.', 1;
-
-IF NOT EXISTS (SELECT 1 FROM dbo.UserProfile WHERE user_id = @UserId)
-    THROW 51104, 'D must provision UserProfile B_DEMO_USER01 before seeding.', 1;
+IF @R01RoleId IS NULL OR @PersonalRoleId IS NULL OR @EnterpriseRoleId IS NULL
+    THROW 51103, 'Seed the agreed R01, R04 and R05 roles before loading B demo data.', 1;
 
 BEGIN TRANSACTION;
+
+-- These B-owned scenario identities use the official R role IDs. The hashes are
+-- unusable test markers; these records are not login credentials.
+IF NOT EXISTS (SELECT 1 FROM dbo.SysAccount WHERE username = 'B_DEMO_R01')
+    INSERT INTO dbo.SysAccount (username, password_hash, role_id, status)
+    VALUES ('B_DEMO_R01', 'TEST_ONLY_NO_LOGIN', @R01RoleId, 1);
+IF NOT EXISTS (SELECT 1 FROM dbo.SysAccount WHERE username = @UserId)
+    INSERT INTO dbo.SysAccount (username, password_hash, role_id, status)
+    VALUES (@UserId, 'TEST_ONLY_NO_LOGIN', @PersonalRoleId, 1);
+IF NOT EXISTS (SELECT 1 FROM dbo.SysAccount WHERE username = @EnterpriseId)
+    INSERT INTO dbo.SysAccount (username, password_hash, role_id, status)
+    VALUES (@EnterpriseId, 'TEST_ONLY_NO_LOGIN', @EnterpriseRoleId, 1);
+
+SELECT @NoticeAccountId = account_id FROM dbo.SysAccount
+WHERE username = 'B_DEMO_R01' AND role_id = @R01RoleId AND status = 1;
+SELECT @UserAccountId = account_id FROM dbo.SysAccount
+WHERE username = @UserId AND role_id = @PersonalRoleId AND status = 1;
+SELECT @EnterpriseAccountId = account_id FROM dbo.SysAccount
+WHERE username = @EnterpriseId AND role_id = @EnterpriseRoleId AND status = 1;
+
+IF @NoticeAccountId IS NULL OR @UserAccountId IS NULL OR @EnterpriseAccountId IS NULL
+    THROW 51104, 'A B demo account exists with an unexpected role or disabled status.', 1;
+
+IF NOT EXISTS (SELECT 1 FROM dbo.UserProfile WHERE user_id = @UserId)
+    INSERT INTO dbo.UserProfile
+        (user_id, account_id, phone_ciphertext, phone_hash, real_name_status,
+         register_channel, registered_at, status)
+    VALUES
+        (@UserId, @UserAccountId, HASHBYTES('SHA2_256', @UserId),
+         CONVERT(CHAR(64), HASHBYTES('SHA2_256', @UserId), 2), 'UNVERIFIED',
+         'B_DEMO', '2026-01-01T00:00:00', 'ACTIVE');
+
+IF EXISTS (SELECT 1 FROM dbo.UserProfile WHERE user_id = @UserId AND account_id <> @UserAccountId)
+    THROW 51113, 'B_DEMO_USER01 is already linked to a different R account.', 1;
+
+IF NOT EXISTS (SELECT 1 FROM dbo.EnterpriseProfile WHERE enterprise_id = @EnterpriseId)
+    INSERT INTO dbo.EnterpriseProfile
+        (enterprise_id, account_id, enterprise_name, credit_code, contact_name,
+         contact_phone_ciphertext, status)
+    VALUES
+        (@EnterpriseId, @EnterpriseAccountId, N'B 演示企业', 'BDEMO0000000000001',
+         N'演示联系人', HASHBYTES('SHA2_256', @EnterpriseId), 'ACTIVE');
+
+IF EXISTS (SELECT 1 FROM dbo.EnterpriseProfile
+           WHERE enterprise_id = @EnterpriseId AND account_id <> @EnterpriseAccountId)
+    THROW 51114, 'B_DEMO_ENT01 is already linked to a different R account.', 1;
 
 IF NOT EXISTS (SELECT 1 FROM dbo.Operator WHERE operator_id = @OperatorId)
     INSERT INTO dbo.Operator (operator_id, operator_name, status)

@@ -182,6 +182,8 @@ sqlcmd -S "localhost\SQLEXPRESS" -E -d EV_B_TEST -C -b -f i:65001 -i .\tests\tes
 
 ## B 持久层：同枪开单
 
+`src/evplatform/db.py` 提供惰性绑定的 `SessionLocal`、声明式 `Base`，并保留测试可注入连接的 `create_engine_from_env` / `create_session_factory`。`src/evplatform/models.py` 映射 Operator、ChargingStation 和 ChargingOrder。`src/evplatform/order_queries.py` 提供按 `created_at DESC, order_id DESC` 稳定排序的 ORM 分页查询，页码从 1 开始、单页最多 100 条。
+
 `src/evplatform/orders.py` 的 `open_personal_order` 由调用方提供 SQLAlchemy Session 和事务。服务先用 `UPDLOCK, HOLDLOCK` 锁定枪记录，再检查枪状态及未释放订单，最后插入个人订单；提交或回滚由调用方负责。
 
 在 PowerShell 中从仓库根目录运行持久层测试。连接串只需设置在当前终端，且必须指向 `EV_B_TEST`：
@@ -223,3 +225,9 @@ $env:EV_DB_ODBC = 'DRIVER={ODBC Driver 18 for SQL Server};SERVER=localhost\SQLEX
 A1、B、A2 建表文件均使用当前连接的数据库上下文。使用 `sqlcmd` 时用 `-d EV_B_TEST` 明确指定目标库；不要依赖 SSMS 上次选中的数据库。
 
 `30_B_foreign_keys.sql` 包含 B 内部、B→A1 和 B→A2 外键。指向 R 的 `EnterpriseProfile`、`UserProfile`、`SysAccount` 以及指向 C 的 `DeviceReport` 外键，须等对应正式表就绪后再添加；不要创建占位表。
+
+`31_A1B_R_C_foreign_keys.sql` 收录 A1/B 字段指向 R/C 的 7 条外键。必须先安装正式的 `SysAccount`、`UserProfile`、`EnterpriseProfile` 和 `DeviceReport`，再执行；脚本使用 `WITH CHECK`，会拒绝既有孤儿数据。
+
+交接演示种子顺序为：先执行 `50_B_demo_settlement_data.sql` 创建 R01/R04/R05 测试账号与个人订单，再执行 `51_B_demo_enterprise_settlement.sql` 创建企业关联数据并通过 A2 过程生成已付款回执。51 号脚本模拟上游已核价/已结清输入，仅供 D 下游来源联调，不构成企业订单生产支付实现。
+
+设置 `EV_DB_ODBC` 和 `PYTHONPATH=src` 后，可执行 `python -m evplatform.db` 检查当前连接库名；`SessionLocal` 首次创建会话时才读取本机连接配置。不要把真实凭据写入仓库。
