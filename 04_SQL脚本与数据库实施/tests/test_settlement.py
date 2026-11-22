@@ -20,7 +20,7 @@ def test_existing_settlement_rejects_duplicate_generation():
             WHERE station_id = :station AND period_month = :period
         """), STATION_MONTH).scalar_one()
 
-    with SessionLocal() as session, pytest.raises(DBAPIError, match=r"50011"):
+    with SessionLocal() as session, pytest.raises(DBAPIError, match=r"\b50011\b"):
         session.execute(
             text("EXEC dbo.usp_GenerateSettlement :station, :period, :assignee, :assignee"),
             {**STATION_MONTH, "assignee": assignee},
