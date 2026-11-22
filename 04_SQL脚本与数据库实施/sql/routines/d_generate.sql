@@ -42,22 +42,23 @@ BEGIN
                    WHERE station_id = @station_id AND period_month = @period_month)
             THROW 50011, N'该场站该账期已生成结算单', 1;
 
-        -- 费率：站级优先，运营商默认兜底
-        SELECT TOP 1 @platform_rate = platform_rate
-        FROM dbo.OperatorSettlementRate
+        -- 月初取值。分别核对两层候选数，包括被站级费率覆盖的默认档。
+        DECLARE @station_count INT, @operator_count INT, @default_rate DECIMAL(7,6);
+        SELECT @station_count = COUNT(*), @platform_rate = MAX(platform_rate)
+        FROM dbo.OperatorSettlementRate WITH (HOLDLOCK)
         WHERE station_id = @station_id AND effective_from <= @period_start
-              AND (effective_to IS NULL OR effective_to > @period_start) AND status = 'ACTIVE'
-        ORDER BY effective_from DESC;
-        IF @platform_rate IS NULL
-        BEGIN
-            SELECT TOP 1 @platform_rate = r.platform_rate
-            FROM dbo.OperatorSettlementRate r
-            JOIN dbo.ChargingStation s ON s.station_id = @station_id
-            WHERE r.operator_id = s.operator_id AND r.station_id IS NULL
-                  AND r.effective_from <= @period_start
-                  AND (r.effective_to IS NULL OR r.effective_to > @period_start) AND r.status = 'ACTIVE'
-            ORDER BY r.effective_from DESC;
-        END;
+          AND (effective_to IS NULL OR effective_to > @period_start) AND status = 'ACTIVE';
+
+        SELECT @operator_count = COUNT(*), @default_rate = MAX(r.platform_rate)
+        FROM dbo.ChargingStation s
+        JOIN dbo.OperatorSettlementRate r WITH (HOLDLOCK) ON r.operator_id = s.operator_id
+        WHERE s.station_id = @station_id AND r.station_id IS NULL
+          AND r.effective_from <= @period_start
+          AND (r.effective_to IS NULL OR r.effective_to > @period_start) AND r.status = 'ACTIVE';
+
+        IF @station_count > 1 OR @operator_count > 1
+            THROW 50149, N'结算费率同级有效区间重叠', 1;
+        SET @platform_rate = COALESCE(@platform_rate, @default_rate);
         IF @platform_rate IS NULL THROW 50012, N'未配置结算费率', 1;
 
         INSERT INTO dbo.SettlementStatement (station_id, period_month, platform_rate, status, assigned_account_id, created_by, created_at)

@@ -5,6 +5,71 @@
 --   结转 APPLIED 由 v_SettlementLedger 单独读取，不写回 adjustment_amount。
 -- =============================================================
 
+-- 按订单串行化两种退款扣回。事务结束时自动释放。
+CREATE PROCEDURE dbo.usp_LockSettlementRefundOrder @order_id BIGINT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @order_id IS NULL OR @@TRANCOUNT = 0
+        THROW 50140, N'退款扣回必须关联订单并在事务内办理', 1;
+
+    DECLARE @resource NVARCHAR(255) = CONCAT(N'D:SettlementRefund:Order:', @order_id);
+    DECLARE @result INT;
+    EXEC @result = sys.sp_getapplock
+        @Resource = @resource, @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = 10000;
+    IF @result < 0 THROW 50141, N'无法取得订单退款扣回锁', 1;
+END
+GO
+
+-- 调用方先取得订单锁。运营商基础收益使用台账相同的逐笔佣金舍入。
+CREATE PROCEDURE dbo.usp_CheckSettlementRefundAmount
+    @settlement_id BIGINT, @order_id BIGINT, @refund_id BIGINT,
+    @amount DECIMAL(18,2), @carryover_id BIGINT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @amount IS NULL OR @amount >= 0
+        THROW 50142, N'退款扣回金额必须为负数', 1;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM dbo.RefundRecord r
+        JOIN dbo.PaymentRecord p ON p.payment_id = r.payment_id
+        WHERE r.refund_id = @refund_id AND p.order_id = @order_id AND r.status = 'SUCCESS'
+    ) THROW 50143, N'退款未成功或不属于指定订单', 1;
+
+    DECLARE @limit DECIMAL(28,2), @difference DECIMAL(28,2), @carryover DECIMAL(28,2);
+    SELECT @limit = d.electricity_base + d.service_base + d.minimum_adjustment
+                    - ROUND((d.service_base + d.minimum_adjustment) * s.platform_rate, 2)
+    FROM dbo.SettlementDetail d
+    JOIN dbo.SettlementStatement s ON s.settlement_id = d.settlement_id
+    WHERE d.settlement_id = @settlement_id AND d.order_id = @order_id;
+    IF @limit IS NULL THROW 50144, N'指定订单不在原结算单明细中', 1;
+
+    IF EXISTS (
+        SELECT 1 FROM dbo.ReconciliationDifference
+        WHERE refund_id = @refund_id AND difference_type = 4 AND status = 2
+    ) OR EXISTS (
+        SELECT 1 FROM dbo.SettlementCarryoverAdjustment
+        WHERE refund_id = @refund_id AND status IN ('PENDING','APPROVED','APPLIED')
+          AND (@carryover_id IS NULL OR carryover_adjustment_id <> @carryover_id)
+    ) THROW 50145, N'同一退款已占用其他扣回路径', 1;
+
+    SELECT @difference = COALESCE(SUM(difference_amount), 0)
+    FROM dbo.ReconciliationDifference
+    WHERE order_id = @order_id AND difference_type = 4 AND status = 2 AND difference_amount < 0;
+
+    SELECT @carryover = COALESCE(SUM(c.adjustment_amount), 0)
+    FROM dbo.SettlementCarryoverAdjustment c
+    JOIN dbo.RefundRecord r ON r.refund_id = c.refund_id
+    JOIN dbo.PaymentRecord p ON p.payment_id = r.payment_id
+    WHERE p.order_id = @order_id AND c.status IN ('PENDING','APPROVED','APPLIED')
+      AND (@carryover_id IS NULL OR c.carryover_adjustment_id <> @carryover_id);
+
+    IF -(@difference + @carryover + @amount) > @limit
+        THROW 50146, N'累计扣回超过原订单运营商收益', 1;
+END
+GO
+
 -- ---------- 登记差异（R03 获派本人；类型4须有效退款）----------
 CREATE PROCEDURE dbo.usp_RegisterDifference
     @settlement_id     BIGINT,
@@ -12,13 +77,15 @@ CREATE PROCEDURE dbo.usp_RegisterDifference
     @difference_type   TINYINT,
     @difference_amount DECIMAL(12,2),
     @refund_id         BIGINT = NULL,
-    @created_by        BIGINT
+    @created_by        BIGINT,
+    @difference_id     BIGINT = NULL OUTPUT
 AS
 BEGIN
     SET NOCOUNT ON; SET XACT_ABORT ON;
     BEGIN TRY
         BEGIN TRANSACTION;
         DECLARE @st TINYINT, @assignee BIGINT;
+        IF @difference_type = 4 EXEC dbo.usp_LockSettlementRefundOrder @order_id;
 
         SELECT @st = status, @assignee = assigned_account_id
         FROM dbo.SettlementStatement WITH (UPDLOCK, HOLDLOCK) WHERE settlement_id = @settlement_id;
@@ -31,19 +98,8 @@ BEGIN
         IF @difference_type = 4
         BEGIN
             IF @refund_id IS NULL THROW 50031, N'类型4（退款调整）必须填退款号', 1;
-            IF NOT EXISTS (
-                SELECT 1 FROM dbo.RefundRecord rf
-                JOIN dbo.PaymentRecord p ON p.payment_id = rf.payment_id
-                WHERE rf.refund_id = @refund_id AND p.order_id = @order_id AND rf.status = 'SUCCESS')
-                THROW 50032, N'退款不属于本订单或未成功', 1;
-
-            -- 退款互斥：同一退款不得已有生效差异，也不得已被跨期扣回应用
-            IF EXISTS (SELECT 1 FROM dbo.ReconciliationDifference
-                       WHERE refund_id = @refund_id AND status = 2)
-                THROW 50034, N'该退款已有生效差异，不能重复登记', 1;
-            IF EXISTS (SELECT 1 FROM dbo.SettlementCarryoverAdjustment
-                       WHERE refund_id = @refund_id AND status = 'APPLIED')
-                THROW 50035, N'该退款已通过跨期扣回生效，不能再登记差异', 1;
+            EXEC dbo.usp_CheckSettlementRefundAmount
+                @settlement_id, @order_id, @refund_id, @difference_amount;
         END
         ELSE
         BEGIN
@@ -52,6 +108,7 @@ BEGIN
 
         INSERT INTO dbo.ReconciliationDifference (settlement_id, order_id, difference_type, difference_amount, status, refund_id, created_by, created_at)
         VALUES (@settlement_id, @order_id, @difference_type, @difference_amount, 0, @refund_id, @created_by, SYSDATETIME());
+        SET @difference_id = CONVERT(BIGINT, SCOPE_IDENTITY());
 
         COMMIT TRANSACTION;
     END TRY
@@ -74,7 +131,10 @@ BEGIN
         BEGIN TRANSACTION;
         DECLARE @now DATETIME2(3) = SYSDATETIME();
         DECLARE @settlement_id BIGINT, @amount DECIMAL(12,2), @status TINYINT, @created_by BIGINT, @sst TINYINT;
-        DECLARE @difference_type TINYINT, @refund_id BIGINT;
+        DECLARE @difference_type TINYINT, @refund_id BIGINT, @order_id BIGINT, @payable DECIMAL(28,2);
+        SELECT @order_id = order_id, @difference_type = difference_type
+        FROM dbo.ReconciliationDifference WHERE difference_id = @difference_id;
+        IF @difference_type = 4 EXEC dbo.usp_LockSettlementRefundOrder @order_id;
 
         SELECT @settlement_id = settlement_id, @amount = difference_amount,
                @status = status, @created_by = created_by,
@@ -82,14 +142,8 @@ BEGIN
         FROM dbo.ReconciliationDifference WITH (UPDLOCK, HOLDLOCK)
         WHERE difference_id = @difference_id;
 
-        -- 生效互斥：类型4 生效前确认该退款未被跨期扣回应用
-        IF @difference_type = 4 AND EXISTS (
-            SELECT 1 FROM dbo.SettlementCarryoverAdjustment
-            WHERE refund_id = @refund_id AND status = 'APPLIED')
-            THROW 50036, N'该退款已通过跨期扣回生效，差异不能再次生效', 1;
-
         IF @settlement_id IS NULL THROW 50020, N'差异不存在', 1;
-        IF @status <> 0 THROW 50021, N'差异不在待处理状态', 1;
+        IF @status NOT IN (0,1) THROW 50021, N'差异不在待处理或处理中状态', 1;
         IF @reviewed_by = @created_by THROW 50022, N'审批人与登记人不能相同', 1;
         IF NOT EXISTS (SELECT 1 FROM dbo.SysAccount WHERE account_id = @reviewed_by AND role_id = 1 AND status = 1)
             THROW 50023, N'审批人必须是启用的 R01 管理员', 1;
@@ -99,6 +153,13 @@ BEGIN
         SELECT @sst = status FROM dbo.SettlementStatement WITH (UPDLOCK, HOLDLOCK) WHERE settlement_id = @settlement_id;
         IF @sst IS NULL THROW 50039, N'所属结算单不存在', 1;
         IF @sst <> 0 THROW 50030, N'结算单不在待对账状态，不能关闭差异', 1;
+
+        IF @difference_type = 4
+            EXEC dbo.usp_CheckSettlementRefundAmount @settlement_id, @order_id, @refund_id, @amount;
+
+        SELECT @payable = payable_amount FROM dbo.v_SettlementLedger WHERE settlement_id = @settlement_id;
+        IF @payable IS NULL OR @payable + @amount < 0
+            THROW 50147, N'关闭差异后最终应结不能为负', 1;
 
         UPDATE dbo.ReconciliationDifference
         SET status = 2, resolution = @resolution, operator_evidence = @operator_evidence,
@@ -317,7 +378,7 @@ BEGIN
 END
 GO
 
--- ---------- 应用跨期扣回（R01；只标 APPLIED，不写 adjustment_amount）----------
+-- ---------- 应用跨期扣回（获派 R03；只标 APPLIED，不写 adjustment_amount）----------
 CREATE PROCEDURE dbo.usp_ApplyCarryover
     @carryover_adjustment_id BIGINT, @target_settlement_id BIGINT, @applied_by BIGINT
 AS
@@ -328,33 +389,48 @@ BEGIN
         DECLARE @now DATETIME2(3) = SYSDATETIME();
         DECLARE @status VARCHAR(20), @amount DECIMAL(18,2), @plan_month CHAR(6), @orig_settlement BIGINT;
         DECLARE @target_month CHAR(6), @target_station VARCHAR(20), @orig_station VARCHAR(20), @tst TINYINT, @tpayable DECIMAL(28,2);
-        DECLARE @refund_id BIGINT, @orig_month CHAR(6);
+        DECLARE @refund_id BIGINT, @orig_month CHAR(6), @order_id BIGINT, @assignee BIGINT;
+        DECLARE @confirmed_at DATETIME2(3), @refunded_at DATETIME2(3);
+        SELECT @order_id = p.order_id
+        FROM dbo.SettlementCarryoverAdjustment c
+        JOIN dbo.RefundRecord r ON r.refund_id = c.refund_id
+        JOIN dbo.PaymentRecord p ON p.payment_id = r.payment_id
+        WHERE c.carryover_adjustment_id = @carryover_adjustment_id;
+        IF @order_id IS NULL THROW 50090, N'结转记录或关联订单不存在', 1;
+        EXEC dbo.usp_LockSettlementRefundOrder @order_id;
 
         SELECT @status = status, @amount = adjustment_amount, @plan_month = target_period_month,
                @orig_settlement = original_settlement_id, @refund_id = refund_id
         FROM dbo.SettlementCarryoverAdjustment WITH (UPDLOCK, HOLDLOCK) WHERE carryover_adjustment_id = @carryover_adjustment_id;
 
-        -- 生效互斥：该退款不得已有生效差异
-        IF EXISTS (SELECT 1 FROM dbo.ReconciliationDifference
-                   WHERE refund_id = @refund_id AND status = 2)
-            THROW 50098, N'该退款已有生效差异，不能再应用跨期扣回', 1;
         IF @status IS NULL THROW 50090, N'结转记录不存在', 1;
         IF @status <> 'APPROVED' THROW 50091, N'结转未审批通过，不能应用', 1;
-        IF NOT EXISTS (SELECT 1 FROM dbo.SysAccount WHERE account_id = @applied_by AND role_id = 1 AND status = 1)
-            THROW 50092, N'应用人必须是启用的 R01 管理员', 1;
+        IF NOT EXISTS (SELECT 1 FROM dbo.SysAccount WHERE account_id = @applied_by AND role_id = 3 AND status = 1)
+            THROW 50092, N'应用人必须是启用的 R03 专员', 1;
 
-        SELECT @target_month = period_month, @target_station = station_id, @tst = status
+        SELECT @orig_station = station_id, @orig_month = period_month, @confirmed_at = confirmed_at
+        FROM dbo.SettlementStatement WITH (UPDLOCK, HOLDLOCK)
+        WHERE settlement_id = @orig_settlement AND status IN (1,2);
+        SELECT @refunded_at = refunded_at FROM dbo.RefundRecord WHERE refund_id = @refund_id AND status = 'SUCCESS';
+        IF @confirmed_at IS NULL OR @refunded_at IS NULL OR @refunded_at <= @confirmed_at
+            THROW 50151, N'应用前须核实原单已锁定且退款发生在锁定后', 1;
+
+        SELECT @target_month = period_month, @target_station = station_id, @tst = status,
+               @assignee = assigned_account_id
         FROM dbo.SettlementStatement WITH (UPDLOCK, HOLDLOCK) WHERE settlement_id = @target_settlement_id;
-        SELECT @orig_station = station_id, @orig_month = period_month FROM dbo.SettlementStatement WHERE settlement_id = @orig_settlement;
         IF @target_month IS NULL THROW 50093, N'目标结算单不存在', 1;
         IF @target_month <> @plan_month THROW 50094, N'目标结算单账期与计划账期不一致', 1;
         IF @target_month <= @orig_month THROW 50095, N'目标账期必须晚于原账期', 1;
         IF @target_station <> @orig_station THROW 50096, N'结转必须落到同站后续账期', 1;
         IF @tst <> 0 THROW 50097, N'目标结算单必须是待对账状态', 1;
+        IF @applied_by <> @assignee THROW 50148, N'只能由目标结算单获派专员应用结转', 1;
+
+        EXEC dbo.usp_CheckSettlementRefundAmount
+            @orig_settlement, @order_id, @refund_id, @amount, @carryover_adjustment_id;
 
         -- 足额可扣：应用后应结不得为负（结转额只通过 APPLIED 记录参与汇总）
         SELECT @tpayable = payable_amount FROM dbo.v_SettlementLedger WHERE settlement_id = @target_settlement_id;
-        IF @tpayable + @amount < 0 THROW 50099, N'目标结算单余额不足，不能应用该扣回', 1;
+        IF @tpayable IS NULL OR @tpayable + @amount < 0 THROW 50099, N'目标结算单余额不足，不能应用该扣回', 1;
 
         UPDATE dbo.SettlementCarryoverAdjustment SET status = 'APPLIED', target_settlement_id = @target_settlement_id
         WHERE carryover_adjustment_id = @carryover_adjustment_id;

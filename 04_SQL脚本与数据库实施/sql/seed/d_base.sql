@@ -1,145 +1,170 @@
 -- =============================================================
--- D 线种子：费率、分派、结算单与明细、差异、发票、结转、人工核对、日志
--- 前置：r_base（账号）、00_b_fixture（订单 40 笔跨 4 账期、退款 20 笔）
--- 产出：20 结算单 + 40 明细 + 20 差异 + 20 发票（挂在已确认账单上）
---       + 20 结转 + 20 核对事项 + 20 操作日志
+-- D 线种子（数据驱动版）：费率 → 分派 → 生成 25 单 → 确认 → 退款 → 结转链
+--                      → 202610 差异 → 开票 → 核对事项
+-- 前置：r_base、50_B_demo_settlement_data、60_D_demo_bulk_data 已执行；
+--       d_generate / d_flows / d_register_carryover 已建。
+-- 依赖 B_DEMO_* / D_DEMO_* 的真实编号，不再使用 ST-*/OP-* 夹具编号。
 -- =============================================================
 SET NOCOUNT ON;
+SET XACT_ABORT ON;
+BEGIN TRY
+BEGIN TRANSACTION;
 
--- 站级费率（3）+ 运营商默认费率（3）
-INSERT INTO dbo.OperatorSettlementRate (operator_id, station_id, platform_rate, effective_from, status) VALUES
-(NULL, 'ST-001', 0.200000, '2026-08-01T00:00:00', 'ACTIVE'),
-(NULL, 'ST-003', 0.180000, '2026-08-01T00:00:00', 'ACTIVE'),
-(NULL, 'ST-005', 0.220000, '2026-08-01T00:00:00', 'ACTIVE'),
-('OP-001', NULL, 0.200000, '2026-08-01T00:00:00', 'ACTIVE'),
-('OP-002', NULL, 0.180000, '2026-08-01T00:00:00', 'ACTIVE'),
-('OP-003', NULL, 0.220000, '2026-08-01T00:00:00', 'ACTIVE');
+DECLARE @r01 BIGINT = (SELECT account_id FROM dbo.SysAccount WHERE username='demo_admin_r01');
+DECLARE @r03 BIGINT = (SELECT account_id FROM dbo.SysAccount WHERE username='demo_settlement_r03');
 
--- 结算生成事项分派：5 站 × 4 账期 = 20 条
-DECLARE @sa_st INT = 1;
-WHILE @sa_st <= 5
+DECLARE @s INT, @m INT, @st VARCHAR(20), @ym CHAR(6), @next_ym CHAR(6);
+DECLARE @settle BIGINT, @oid BIGINT, @pay BIGINT, @ref BIGINT, @carry BIGINT, @target BIGINT;
+DECLARE @payment_key VARCHAR(64), @refund_no VARCHAR(64), @invoice_no VARCHAR(50);
+DECLARE @new_refund TABLE (refund_id BIGINT);
+DECLARE @final_settlement BIGINT, @final_order BIGINT, @d INT, @dt TINYINT, @damt DECIMAL(12,2), @did BIGINT, @settleInv BIGINT;
+
+-- 四个 D 场站各五个连续月度区间。B 样例站使用运营商默认率。
+INSERT INTO dbo.OperatorSettlementRate (operator_id, station_id, platform_rate, effective_from, effective_to, status)
+SELECT NULL, s.station_id, 0.200000, p.starts_at, p.ends_at, 'ACTIVE'
+FROM (VALUES ('D_DEMO_ST02'),('D_DEMO_ST03'),('D_DEMO_ST04'),('D_DEMO_ST05')) s(station_id)
+CROSS JOIN (VALUES (6),(7),(8),(9),(10)) m(month_number)
+CROSS APPLY (
+    SELECT DATEFROMPARTS(2026, m.month_number, 1) AS starts_at,
+           DATEADD(MONTH, 1, DATEFROMPARTS(2026, m.month_number, 1)) AS ends_at
+) p
+WHERE NOT EXISTS (
+    SELECT 1 FROM dbo.OperatorSettlementRate r
+    WHERE r.station_id = s.station_id AND r.effective_from = p.starts_at AND r.status = 'ACTIVE'
+);
+IF NOT EXISTS (SELECT 1 FROM dbo.OperatorSettlementRate WHERE operator_id='B_DEMO_OP01' AND status='ACTIVE')
+    INSERT INTO dbo.OperatorSettlementRate (operator_id, station_id, platform_rate, effective_from, status)
+    VALUES ('B_DEMO_OP01', NULL, 0.200000, '2026-06-01T00:00:00', 'ACTIVE');
+
+-- 2) 分派 + 3) 生成 25 张结算单
+SET @s = 1;
+WHILE @s <= 5
 BEGIN
-    DECLARE @sa_mm INT = 1;
-    WHILE @sa_mm <= 5
+    SET @st = CASE @s WHEN 1 THEN 'B_DEMO_ST01' ELSE 'D_DEMO_ST0' + CAST(@s AS VARCHAR(1)) END;
+    SET @m = 6;
+    WHILE @m <= 10
     BEGIN
-        DECLARE @sa_sid VARCHAR(20) = 'ST-' + RIGHT('00' + CAST(@sa_st AS VARCHAR), 3);
-        DECLARE @sa_pm CHAR(6) = CASE @sa_mm WHEN 1 THEN '202608' WHEN 2 THEN '202609' WHEN 3 THEN '202610' WHEN 4 THEN '202611' ELSE '202612' END;
-        INSERT INTO dbo.ServiceCaseAssignment (case_type, case_id, assigned_account_id, assigned_by, effective_from)
-        SELECT 'SETTLEMENT_GENERATE', @sa_sid + '|' + @sa_pm,
-               (SELECT account_id FROM dbo.SysAccount WHERE username='demo_settlement_r03'),
-               (SELECT account_id FROM dbo.SysAccount WHERE username='demo_admin_r01'),
-               '2026-08-01T00:00:00'
-        WHERE NOT EXISTS (SELECT 1 FROM dbo.ServiceCaseAssignment WHERE case_type='SETTLEMENT_GENERATE' AND case_id=@sa_sid + '|' + @sa_pm);
-        SET @sa_mm = @sa_mm + 1;
+        SET @ym = '2026' + RIGHT('0' + CAST(@m AS VARCHAR), 2);
+        IF NOT EXISTS (SELECT 1 FROM dbo.ServiceCaseAssignment WHERE case_type='SETTLEMENT_GENERATE' AND case_id=@st+'|'+@ym)
+            INSERT INTO dbo.ServiceCaseAssignment (case_type, case_id, assigned_account_id, assigned_by, effective_from)
+            VALUES ('SETTLEMENT_GENERATE', @st+'|'+@ym, @r03, @r01, '2026-06-01T00:00:00');
+        IF NOT EXISTS (SELECT 1 FROM dbo.SettlementStatement WHERE station_id=@st AND period_month=@ym)
+            EXEC dbo.usp_GenerateSettlement @st, @ym, @r03, @r03;
+        SET @m = @m + 1;
     END;
-    SET @sa_st = @sa_st + 1;
+    SET @s = @s + 1;
 END;
 
--- 结算单 + 明细：5 站 × 4 账期
-DECLARE @ss_st INT = 1;
-WHILE @ss_st <= 5
+-- 4) 逐站逐月：确认 06~09 → 锁定后退款 → 登记/审批/应用结转到下一期
+SET @s = 1;
+WHILE @s <= 5
 BEGIN
-    DECLARE @ss_mm INT = 1;
-    WHILE @ss_mm <= 5
+    SET @st = CASE @s WHEN 1 THEN 'B_DEMO_ST01' ELSE 'D_DEMO_ST0' + CAST(@s AS VARCHAR(1)) END;
+    SET @m = 6;
+    WHILE @m <= 9
     BEGIN
-        DECLARE @ss_sid VARCHAR(20) = 'ST-' + RIGHT('00' + CAST(@ss_st AS VARCHAR), 3);
-        DECLARE @ss_pm CHAR(6) = CASE @ss_mm WHEN 1 THEN '202608' WHEN 2 THEN '202609' WHEN 3 THEN '202610' WHEN 4 THEN '202611' ELSE '202612' END;
-        DECLARE @r03 BIGINT = (SELECT account_id FROM dbo.SysAccount WHERE username='demo_settlement_r03');
-        DECLARE @ss_ps DATE = CONVERT(date, @ss_pm + '01', 112);
-        DECLARE @ss_pe DATE = DATEADD(month, 1, @ss_ps);
-        DECLARE @settlement_id BIGINT;
+        SET @ym = '2026' + RIGHT('0' + CAST(@m AS VARCHAR), 2);
+        SET @next_ym = '2026' + RIGHT('0' + CAST(@m + 1 AS VARCHAR), 2);
+        SET @settle = (SELECT settlement_id FROM dbo.SettlementStatement WHERE station_id=@st AND period_month=@ym);
 
-        INSERT INTO dbo.SettlementStatement (station_id, period_month, platform_rate, status, assigned_account_id, created_by, created_at)
-        VALUES (@ss_sid, @ss_pm, 0.200000, 0, @r03, @r03, SYSDATETIME());
-        SET @settlement_id = SCOPE_IDENTITY();
+        EXEC dbo.usp_ConfirmSettlement @settle, @r01, N'联调确认';
 
-        INSERT INTO dbo.SettlementDetail (settlement_id, order_id, ended_at_snapshot, energy_snapshot, electricity_base, service_base, minimum_adjustment, created_at, settled_at_snapshot, settlement_source, eligibility_checked_at, refund_state_snapshot)
-        SELECT @settlement_id, o.order_id, o.end_time, o.energy_kwh, o.electricity_base, o.service_base, o.minimum_adjustment, SYSDATETIME(), o.settled_at, o.order_type, SYSDATETIME(), 'NONE'
-        FROM dbo.ChargingOrder o
-        WHERE o.opening_station_id = @ss_sid AND o.end_time >= @ss_ps AND o.end_time < @ss_pe AND o.status = 'PAID';
+        SET @payment_key = 'D-DEMO-PAY-' + @st + '-' + @ym;
+        SET @refund_no = 'D-DEMO-REF-' + @st + '-' + @ym;
+        SET @pay = NULL;
+        SELECT @pay = p.payment_id, @oid = p.order_id
+        FROM dbo.PaymentRecord p
+        JOIN dbo.SettlementDetail d ON d.order_id = p.order_id AND d.settlement_id = @settle
+        WHERE p.pay_channel = 'OTHER' AND p.transaction_no = @payment_key;
+        IF @pay IS NULL THROW 50160, N'联调支付未关联到指定原单明细', 1;
 
-        SET @ss_mm = @ss_mm + 1;
+        -- 等到服务器时钟跨过确认时间的 DATETIME2(3) 精度。
+        WAITFOR DELAY '00:00:00.010';
+        DELETE FROM @new_refund;
+        INSERT INTO dbo.RefundRecord (payment_id, refund_no, refund_amount, status, reason, refunded_at)
+        OUTPUT inserted.refund_id INTO @new_refund
+        VALUES (@pay, @refund_no, 1.00, 'SUCCESS', N'锁定后退款联调', SYSDATETIME());
+        SELECT @ref = refund_id FROM @new_refund;
+        UPDATE dbo.ChargingOrder SET refund_amount = refund_amount + 1.00 WHERE order_id = @oid;
+        UPDATE dbo.PaymentRecord SET refund_amount = refund_amount + 1.00 WHERE payment_id = @pay;
+
+        SELECT @target = settlement_id FROM dbo.SettlementStatement WHERE station_id=@st AND period_month=@next_ym;
+        EXEC dbo.usp_RegisterCarryover @settle, @ref, @target, -0.80,
+             N'联调核验：用户退 1 元，按原快照核定运营商承担 0.80 元', @r03, @carry OUTPUT;
+        EXEC dbo.usp_ApproveCarryover @carry, @r01;
+        EXEC dbo.usp_ApplyCarryover @carry, @target, @r03;
+        SET @m = @m + 1;
     END;
-    SET @ss_st = @ss_st + 1;
+    SET @s = @s + 1;
 END;
 
--- 差异：20 条（挂在 1~10 号待对账结算单，每单 2 条）
-DECLARE @df INT = 1;
-WHILE @df <= 20
+-- 5) 差异：202610 每站 4 条（类型 1/2/3），登记并关闭 → 20 条 status=2
+SET @s = 1;
+WHILE @s <= 5
 BEGIN
-    DECLARE @sn INT = ((@df - 1) / 2) + 1;   -- 1..10
-    DECLARE @df_oid BIGINT;
-    SELECT @df_oid = MIN(order_id) FROM dbo.SettlementDetail WHERE settlement_id = @sn;
-    IF @df % 2 = 0
-        SELECT @df_oid = MAX(order_id) FROM dbo.SettlementDetail WHERE settlement_id = @sn;
-    IF @df_oid IS NOT NULL
-        INSERT INTO dbo.ReconciliationDifference (settlement_id, order_id, difference_type, difference_amount, status, created_by, created_at)
-        VALUES (@sn, @df_oid, (@df % 4) + 1, CASE WHEN @df % 2 = 0 THEN 0.50 ELSE -0.50 END, 0,
-                (SELECT account_id FROM dbo.SysAccount WHERE username='demo_settlement_r03'), SYSDATETIME());
-    SET @df = @df + 1;
+    SET @st = CASE @s WHEN 1 THEN 'B_DEMO_ST01' ELSE 'D_DEMO_ST0' + CAST(@s AS VARCHAR(1)) END;
+    SET @final_settlement = (SELECT settlement_id FROM dbo.SettlementStatement WHERE station_id=@st AND period_month='202610');
+    SET @payment_key = 'D-DEMO-PAY-' + @st + '-202610';
+    SET @final_order = (
+        SELECT p.order_id FROM dbo.PaymentRecord p
+        JOIN dbo.SettlementDetail d ON d.order_id = p.order_id AND d.settlement_id = @final_settlement
+        WHERE p.pay_channel = 'OTHER' AND p.transaction_no = @payment_key
+    );
+    IF @final_order IS NULL THROW 50161, N'联调最后一期缺少指定订单的明细', 1;
+    SET @d = 1;
+    WHILE @d <= 4
+    BEGIN
+        SET @dt = ((@d - 1) % 3) + 1;
+        SET @damt = CASE WHEN @d % 2 = 1 THEN 0.50 ELSE -0.50 END;
+        EXEC dbo.usp_RegisterDifference @final_settlement, @final_order, @dt, @damt, NULL, @r03, @did OUTPUT;
+        EXEC dbo.usp_CloseDifference @did, @r01, N'联调确认', N'联调关闭';
+        SET @d = @d + 1;
+    END;
+    SET @s = @s + 1;
 END;
 
--- 确认 11~20 号结算单（无差异，直接已确认待补票）
-UPDATE dbo.SettlementStatement
-SET status = 1,
-    confirmed_by = (SELECT account_id FROM dbo.SysAccount WHERE username='demo_admin_r01'),
-    confirmed_at = SYSDATETIME(),
-    confirmation_evidence = N'运营商已确认（种子）'
-WHERE settlement_id BETWEEN 11 AND 20;
-
--- 发票：20 条（挂在 11~20 号已确认账单，每单 2 张、合计全额 8.80）
-DECLARE @inv INT = 1;
-WHILE @inv <= 20
+-- 6) 开票：06~09 的 20 张已确认单，每张 1.00 蓝票
+SET @s = 1;
+WHILE @s <= 5
 BEGIN
-    DECLARE @inv_sn INT = 10 + ((@inv - 1) / 2) + 1;   -- 11..20
-    INSERT INTO dbo.SettlementInvoice (settlement_id, invoice_no, invoice_title, tax_number, amount, status, created_by, created_at, issued_at)
-    VALUES (@inv_sn, 'INV-2026-' + RIGHT('0000' + CAST(@inv AS VARCHAR), 4), N'平台运营公司', '91110000MA0000000X', 4.40, 1,
-            (SELECT account_id FROM dbo.SysAccount WHERE username='demo_settlement_r03'), SYSDATETIME(), SYSDATETIME());
-    SET @inv = @inv + 1;
+    SET @st = CASE @s WHEN 1 THEN 'B_DEMO_ST01' ELSE 'D_DEMO_ST0' + CAST(@s AS VARCHAR(1)) END;
+    SET @m = 6;
+    WHILE @m <= 9
+    BEGIN
+        SET @ym = '2026' + RIGHT('0' + CAST(@m AS VARCHAR), 2);
+        SET @settleInv = (SELECT settlement_id FROM dbo.SettlementStatement WHERE station_id=@st AND period_month=@ym);
+        SET @invoice_no = 'D-DEMO-INV-' + @st + '-' + @ym;
+        EXEC dbo.usp_RegisterInvoice @settleInv, @invoice_no, N'平台运营公司', '91110000MA0000000X', 1.00, @r03;
+        SET @m = @m + 1;
+    END;
+    SET @s = @s + 1;
 END;
 
--- 退款结转：20 条（一半已审批，一半待审批）
-DECLARE @cv INT = 1;
-WHILE @cv <= 20
-BEGIN
-    INSERT INTO dbo.SettlementCarryoverAdjustment (original_settlement_id, refund_id, target_period_month, adjustment_amount, status, created_by, assessment_evidence, created_at)
-    VALUES (@cv, @cv, '202612', -1.00, CASE WHEN @cv % 2 = 0 THEN 'APPROVED' ELSE 'PENDING' END,
-            (SELECT account_id FROM dbo.SysAccount WHERE username='demo_settlement_r03'), N'跨期退款扣回-演示', SYSDATETIME());
-    SET @cv = @cv + 1;
-END;
+-- 7) 核对事项：20 条 POST_LOCK_REFUND（每条对应一笔 D 联调退款）
+INSERT INTO dbo.SettlementReviewCase (order_id, period_month, reason_code, refund_id, assigned_account_id, status, created_at)
+SELECT p.order_id, s.period_month, 'POST_LOCK_REFUND', r.refund_id, @r03, 'PENDING', SYSDATETIME()
+FROM dbo.RefundRecord r
+JOIN dbo.PaymentRecord p ON p.payment_id = r.payment_id
+JOIN dbo.SettlementCarryoverAdjustment a ON a.refund_id = r.refund_id AND a.status = 'APPLIED'
+JOIN dbo.SettlementStatement s ON s.settlement_id = a.original_settlement_id
+JOIN dbo.SettlementDetail d ON d.settlement_id = s.settlement_id AND d.order_id = p.order_id
+WHERE r.refund_no = 'D-DEMO-REF-' + s.station_id + '-' + s.period_month
+  AND p.pay_channel = 'OTHER' AND p.transaction_no = 'D-DEMO-PAY-' + s.station_id + '-' + s.period_month
+  AND s.status IN (1,2) AND r.status = 'SUCCESS' AND r.refunded_at > s.confirmed_at
+  AND NOT EXISTS (SELECT 1 FROM dbo.SettlementReviewCase c WHERE c.refund_id = r.refund_id AND c.reason_code='POST_LOCK_REFUND');
 
--- 人工核对事项：20 条
-DECLARE @rc INT = 1;
-WHILE @rc <= 20
-BEGIN
-    INSERT INTO dbo.SettlementReviewCase (order_id, period_month, reason_code, assigned_account_id, status, created_at)
-    VALUES (@rc, '202611',
-            CASE @rc % 3 WHEN 0 THEN 'LATE_PAID' WHEN 1 THEN 'PRE_SETTLE_REFUND' ELSE 'PAYMENT_FAILED' END,
-            (SELECT account_id FROM dbo.SysAccount WHERE username='demo_settlement_r03'), 'PENDING', SYSDATETIME());
-    SET @rc = @rc + 1;
-END;
+COMMIT TRANSACTION;
 
--- 操作日志：20 条
-DECLARE @log INT = 1;
-WHILE @log <= 20
-BEGIN
-    INSERT INTO dbo.OperationLog (module_code, object_type, object_id, action_code, actor_type, actor_account_id, occurred_at, before_data, after_data)
-    VALUES (CASE @log % 5 WHEN 0 THEN 'A1' WHEN 1 THEN 'BILLING' WHEN 2 THEN 'C' WHEN 3 THEN 'A2' ELSE 'D' END,
-            'OBJ' + CAST(@log AS VARCHAR), CAST(@log AS VARCHAR), 'ACTION' + CAST(@log AS VARCHAR),
-            CASE WHEN @log % 2 = 0 THEN 'SYSTEM' ELSE 'HUMAN' END,
-            CASE WHEN @log % 2 = 0 THEN NULL ELSE (SELECT account_id FROM dbo.SysAccount WHERE username='demo_admin_r01') END,
-            DATEADD(minute, @log, '2026-11-01T08:00:00'), N'{}', N'{}');
-    SET @log = @log + 1;
-END;
-GO
-
--- 校验行数
-SELECT 'OperatorSettlementRate' t, COUNT(*) n FROM dbo.OperatorSettlementRate
-UNION ALL SELECT 'ServiceCaseAssignment', COUNT(*) FROM dbo.ServiceCaseAssignment
-UNION ALL SELECT 'SettlementStatement', COUNT(*) FROM dbo.SettlementStatement
+SELECT 'SettlementStatement' t, COUNT(*) n FROM dbo.SettlementStatement
 UNION ALL SELECT 'SettlementDetail', COUNT(*) FROM dbo.SettlementDetail
+UNION ALL SELECT 'SettlementCarryoverAdjustment(APPLIED)', COUNT(*) FROM dbo.SettlementCarryoverAdjustment WHERE status='APPLIED'
 UNION ALL SELECT 'ReconciliationDifference', COUNT(*) FROM dbo.ReconciliationDifference
 UNION ALL SELECT 'SettlementInvoice', COUNT(*) FROM dbo.SettlementInvoice
-UNION ALL SELECT 'SettlementCarryoverAdjustment', COUNT(*) FROM dbo.SettlementCarryoverAdjustment
 UNION ALL SELECT 'SettlementReviewCase', COUNT(*) FROM dbo.SettlementReviewCase
-UNION ALL SELECT 'OperationLog', COUNT(*) FROM dbo.OperationLog;
+UNION ALL SELECT 'RefundRecord(D-DEMO)', COUNT(*) FROM dbo.RefundRecord WHERE refund_no LIKE 'D-DEMO-REF-%';
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+    THROW;
+END CATCH;
+GO

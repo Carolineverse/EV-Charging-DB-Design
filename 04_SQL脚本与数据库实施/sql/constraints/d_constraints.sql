@@ -1,4 +1,4 @@
-﻿SET ANSI_NULLS ON;
+SET ANSI_NULLS ON;
 SET ANSI_PADDING ON;
 SET ANSI_WARNINGS ON;
 SET ARITHABORT ON;
@@ -139,4 +139,24 @@ CREATE UNIQUE INDEX UX_SettlementReviewCase_01 ON dbo.SettlementReviewCase (refu
 CREATE UNIQUE INDEX UX_SettlementReviewCase_02 ON dbo.SettlementReviewCase (enterprise_refund_reference, order_id) WHERE reason_code = 'ENTERPRISE_REFUND' AND enterprise_refund_reference IS NOT NULL;
 CREATE INDEX IX_SettlementReviewCase_03 ON dbo.SettlementReviewCase (assigned_account_id, status, created_at);
 CREATE INDEX IX_SettlementReviewCase_04 ON dbo.SettlementReviewCase (order_id);
+GO
+
+-- 同一站级范围或运营商默认范围的 ACTIVE 区间不能相交。
+CREATE TRIGGER dbo.trg_OperatorSettlementRate_NoOverlap
+ON dbo.OperatorSettlementRate
+AFTER INSERT, UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF EXISTS (
+        SELECT 1
+        FROM inserted i
+        JOIN dbo.OperatorSettlementRate r WITH (UPDLOCK, HOLDLOCK)
+          ON r.rate_id <> i.rate_id
+         AND (r.station_id = i.station_id OR r.operator_id = i.operator_id)
+         AND (i.effective_to IS NULL OR r.effective_from < i.effective_to)
+         AND (r.effective_to IS NULL OR i.effective_from < r.effective_to)
+        WHERE i.status = 'ACTIVE' AND r.status = 'ACTIVE'
+    ) THROW 50150, N'同一范围的有效结算费率区间不能重叠', 1;
+END
 GO

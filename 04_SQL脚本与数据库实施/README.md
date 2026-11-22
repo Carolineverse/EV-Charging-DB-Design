@@ -260,7 +260,7 @@ tests/          pytest 用例
 
 ### 三、从空库安装
 
-**方式 A（推荐，SQLCMD 模式一键）**：SSMS 打开 `install_all.sql`，菜单「查询 → SQLCMD 模式」勾选后执行。
+**方式 A（推荐，SQLCMD 模式一键）**：SSMS 打开 `install_d_standalone.sql`，菜单「查询 → SQLCMD 模式」勾选后执行。
 
 **方式 B（手动按顺序）**，每个文件一个查询窗口，先选中目标库（`SELECT DB_NAME()`）：
 
@@ -276,7 +276,7 @@ tests/          pytest 用例
 10. `sql/routines/d_generate.sql`
 11. `sql/routines/d_flows.sql`
 12. `sql/seed/c_base.sql`
-13. `sql/seed/d_base.sql`
+13. `sql/seed/d_base_standalone.sql`
 
 装完校验：
 
@@ -324,7 +324,7 @@ $env:EV_DB_ODBC = "DRIVER={ODBC Driver 18 for SQL Server};SERVER=.\SQLEXPRESS;DA
 
 ### 七、与 B 合并注意事项
 
-1. `sql/seed/00_b_fixture.sql` 随仓库保留，供 D 独立安装。联调时执行 B 的正式建表和种子脚本，跳过精简夹具。现有 `install_all.sql` 会载入精简夹具，适用于 D 独立安装。
+1. `sql/seed/00_b_fixture.sql` 随仓库保留，供 D 独立安装。联调时执行 B 的正式建表和种子脚本，跳过精简夹具。全组入口 `install_all.sql` 使用正式 B 数据与 C 联调种子。空库和账期要求见 [补全说明](补全说明.md)。
 2. **核对 `v_OrderSettlementSource` 列名**（`is_settleable`/`settled_at`/`settlement_source`/`refund_state_snapshot` 等），与 `usp_GenerateSettlement` 头部注释一致。
 3. R04/R05 车主与企业主体由 B 的种子补充；本夹具中的 20 车主 + 3 企业仅用于 D 自测。
 4. 每表 ≥20 条的条数例外：`SysRole`(5)、`AlarmLevelPolicy`(3)、`AlarmCodeDict`(10)、`OperatorSettlementRate`(6) 属固定字典，请组长统一核验。
