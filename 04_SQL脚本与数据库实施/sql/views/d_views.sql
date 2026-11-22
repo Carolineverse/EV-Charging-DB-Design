@@ -47,9 +47,10 @@ JOIN dbo.Operator op ON st.operator_id = op.operator_id
 OUTER APPLY (
     SELECT COUNT(*) AS detail_count,
            SUM(d.electricity_base + d.service_base + d.minimum_adjustment) AS gross_amount,
-           SUM(CAST(ROUND((d.service_base + d.minimum_adjustment) * s.platform_rate, 2)
+           SUM(CAST(ROUND((d.service_base + d.minimum_adjustment) * s2.platform_rate, 2)
                     AS DECIMAL(19,2))) AS platform_fee
     FROM dbo.SettlementDetail d
+    JOIN dbo.SettlementStatement s2 ON s2.settlement_id = d.settlement_id
     WHERE d.settlement_id = s.settlement_id
 ) d
 OUTER APPLY (

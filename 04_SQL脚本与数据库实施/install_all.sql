@@ -5,6 +5,11 @@
 -- 说明：全组顺序，不调用 00_b_fixture.sql（该夹具仅用于 D 独立自测）
 -- =============================================================
 
+-- sqlcmd 默认 QUOTED_IDENTIFIER OFF，会导致 DeviceMonitoringData 的筛选索引创建失败（错误 1934）。
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
+
 -- B 的 50/51 号种子固定 USE EV_B_TEST。已结束账期要求在任何 DDL 之前检查。
 :ON ERROR EXIT
 IF DB_NAME() <> N'EV_B_TEST'
