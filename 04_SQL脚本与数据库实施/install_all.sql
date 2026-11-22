@@ -10,7 +10,6 @@ GO
 
 :r sql\schema\r_core.sql
 :r sql\seed\r_base.sql
-:r sql\seed\00_b_fixture.sql
 :r sql\schema\c_partition.sql
 :r sql\schema\c_core.sql
 :r sql\schema\d_core.sql
