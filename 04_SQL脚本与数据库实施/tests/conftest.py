@@ -39,8 +39,11 @@ def engine():
     try:
         with test_engine.connect() as connection:
             database = connection.execute(text("SELECT DB_NAME()")).scalar_one()
-        if database != "EV_B_TEST":
-            pytest.fail(f"Refusing to run database tests in {database!r}; use EV_B_TEST.")
+        if database not in {"EV_B_TEST", "EV_D_TEST", "EV_INTEGRATION_TEST"}:
+            pytest.fail(
+                f"Refusing to run database tests in {database!r}; "
+                "use EV_B_TEST, EV_D_TEST, or EV_INTEGRATION_TEST."
+            )
         yield test_engine
     finally:
         test_engine.dispose()
