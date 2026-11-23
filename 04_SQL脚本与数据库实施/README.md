@@ -38,9 +38,9 @@
 │  ├─ queries/      查询：Q01 Q02 Q03 q04 q05 + 合订稿
 │  └─ acceptance/   验收：01 基线导出 02 联调验收 03 基线差集
 ├─ src/evplatform/  Python 持久层（13 个模块）
-├─ tests/           pytest 用例 + 20 个 SQL 回归脚本
+├─ tests/           pytest 用例 + 25 个 SQL 回归脚本
 ├─ docs/（仓库根）  安全策略、脱敏加密、备份恢复、联调验收、查询执行计划
-└─ scripts/（仓库根）执行计划采集脚本
+└─ scripts/（仓库根）执行计划采集、隔离备份恢复演练脚本
 ```
 
 ---

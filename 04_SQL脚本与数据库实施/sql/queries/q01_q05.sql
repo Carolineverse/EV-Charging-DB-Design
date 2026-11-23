@@ -21,21 +21,40 @@ ORDER BY op.operator_name, s.station_id;
 -- =============================================================
 -- Q02（B）某场站近 30 天分时段充电电量与收入构成
 -- 关系：ChargingStation + ChargingOrder + OrderFeeDetail + BillingRule（4 表）
--- 参数：场站编号、日期范围（此处以 B_DEMO_ST01 近 30 天为例）
+-- 参数：指定场站的固定样例 30 天窗口（演示数据结束于 2026-10）。
 -- =============================================================
-SELECT b.period_type,
-       SUM(o.energy_kwh)                                          AS total_energy_kwh,
-       SUM(ROUND(f.segment_energy_kwh * b.electricity_price, 2))  AS electricity_fee,
-       SUM(ROUND(f.segment_energy_kwh * b.service_price, 2))      AS service_fee
-FROM dbo.ChargingOrder o
-JOIN dbo.ChargingStation s ON s.station_id = o.opening_station_id
-JOIN dbo.OrderFeeDetail  f ON f.order_id = o.order_id
-JOIN dbo.BillingRule     b ON b.billing_rule_id = f.billing_rule_id
-WHERE s.station_id = 'B_DEMO_ST01'
-  AND o.end_time >= DATEADD(day, -30, SYSDATETIME())
-  AND o.status IN ('PENDING_PAYMENT','PAID')
-GROUP BY b.period_type
-ORDER BY b.period_type;
+DECLARE @station_id VARCHAR(20) = 'B_DEMO_ST01';
+-- 固定窗口让归档演示数据仍可查询，且计划采集可复现。
+DECLARE @range_end DATETIME2(3) = '2026-11-01T00:00:00';
+DECLARE @range_start DATETIME2(3) = DATEADD(day, -30, @range_end);
+
+WITH priced_segments AS
+(
+    SELECT b.period_type,f.segment_energy_kwh,b.electricity_price,
+           b.service_price,f.free_service_fee
+    FROM dbo.ChargingOrder o
+    JOIN dbo.ChargingStation s ON s.station_id=o.opening_station_id
+    JOIN dbo.BillingRuleVersion v
+      ON v.rule_version_id=o.startup_rule_version_id
+     AND v.station_id=o.opening_station_id
+    JOIN dbo.OrderFeeDetail f ON f.order_id=o.order_id
+    JOIN dbo.BillingRule b
+      ON b.billing_rule_id=f.billing_rule_id
+     AND b.rule_version_id=v.rule_version_id
+    WHERE s.station_id=@station_id
+      AND f.segment_start>=@range_start
+      AND f.segment_start<@range_end
+      AND o.priced_at IS NOT NULL
+)
+SELECT period_type,
+       SUM(segment_energy_kwh) AS total_energy_kwh,
+       SUM(ROUND(segment_energy_kwh*electricity_price,2)) AS electricity_fee,
+       SUM(ROUND(segment_energy_kwh*service_price,2)) AS service_fee_before_free,
+       SUM(free_service_fee) AS free_service_fee,
+       SUM(ROUND(segment_energy_kwh*service_price,2)-free_service_fee) AS service_fee
+FROM priced_segments
+GROUP BY period_type
+ORDER BY period_type;
 
 -- =============================================================
 -- Q03（B）企业月结：企业账期金额、订单笔数、结清情况

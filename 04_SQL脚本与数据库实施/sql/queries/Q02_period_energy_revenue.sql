@@ -2,9 +2,10 @@
 -- 日期区间左闭右开，按每个费用段的 segment_start 归属日期。
 -- 金额逐段舍入；本查询是核价金额分析，不代表实际到账或结算收入。
 
-DECLARE @StationId VARCHAR(20) = NULL; -- NULL 表示查询全部场站。
-DECLARE @StartInclusive DATETIME2(3) = '2026-10-01T00:00:00';
+DECLARE @StationId VARCHAR(20) = 'B_DEMO_ST01';
+-- Fixed 30-day sample window ending after the October demo rows.
 DECLARE @EndExclusive DATETIME2(3) = '2026-11-01T00:00:00';
+DECLARE @StartInclusive DATETIME2(3) = DATEADD(day, -30, @EndExclusive);
 
 WITH priced_segments AS
 (
