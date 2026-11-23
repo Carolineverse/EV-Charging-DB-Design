@@ -80,24 +80,34 @@ IF @NoticeAccountId IS NULL OR @UserAccountId IS NULL OR @EnterpriseAccountId IS
     THROW 51104, 'A B demo account exists with an unexpected role or disabled status.', 1;
 
 IF NOT EXISTS (SELECT 1 FROM dbo.UserProfile WHERE user_id = @UserId)
+BEGIN
+    DECLARE @UserPhone NVARCHAR(11) = N'13800001234';
+    DECLARE @UserPhoneCipher VARBINARY(256);
+    EXEC dbo.usp_EncryptSensitive @UserPhone, @UserPhoneCipher OUTPUT;
     INSERT INTO dbo.UserProfile
         (user_id, account_id, phone_ciphertext, phone_hash, real_name_status,
          register_channel, registered_at, status)
     VALUES
-        (@UserId, @UserAccountId, HASHBYTES('SHA2_256', @UserId),
-         CONVERT(CHAR(64), HASHBYTES('SHA2_256', @UserId), 2), 'UNVERIFIED',
+        (@UserId, @UserAccountId, @UserPhoneCipher,
+         CONVERT(CHAR(64), HASHBYTES('SHA2_256', @UserPhone), 2), 'UNVERIFIED',
          'B_DEMO', '2026-01-01T00:00:00', 'ACTIVE');
+END;
 
 IF EXISTS (SELECT 1 FROM dbo.UserProfile WHERE user_id = @UserId AND account_id <> @UserAccountId)
     THROW 51113, 'B_DEMO_USER01 is already linked to a different R account.', 1;
 
 IF NOT EXISTS (SELECT 1 FROM dbo.EnterpriseProfile WHERE enterprise_id = @EnterpriseId)
+BEGIN
+    DECLARE @ContactPhone NVARCHAR(11) = N'13900001234';
+    DECLARE @ContactPhoneCipher VARBINARY(256);
+    EXEC dbo.usp_EncryptSensitive @ContactPhone, @ContactPhoneCipher OUTPUT;
     INSERT INTO dbo.EnterpriseProfile
         (enterprise_id, account_id, enterprise_name, credit_code, contact_name,
          contact_phone_ciphertext, status)
     VALUES
         (@EnterpriseId, @EnterpriseAccountId, N'B 演示企业', 'BDEMO0000000000001',
-         N'演示联系人', HASHBYTES('SHA2_256', @EnterpriseId), 'ACTIVE');
+         N'演示联系人', @ContactPhoneCipher, 'ACTIVE');
+END;
 
 IF EXISTS (SELECT 1 FROM dbo.EnterpriseProfile
            WHERE enterprise_id = @EnterpriseId AND account_id <> @EnterpriseAccountId)

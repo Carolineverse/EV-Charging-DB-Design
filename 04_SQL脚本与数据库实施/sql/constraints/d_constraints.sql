@@ -8,11 +8,11 @@ SET NUMERIC_ROUNDABORT OFF;
 GO
 -- =============================================================
 -- D 线 · 批次 30：外键 + 索引
--- 依赖：01/02/03 建表完成，且 B 线 34 张表已建
+-- 依赖：01/02/03 建表完成，且 B 线表已建
 -- 执行顺序：先补 UQ 约束（作外键目标），再加外键，最后加普通/过滤索引
 -- =============================================================
 
--- ---------- 0. 先补遗漏的唯一约束（作为复合外键目标）----------
+-- ---------- 先补遗漏的唯一约束（作为复合外键目标）----------
 ALTER TABLE dbo.ServiceCaseAssignment ADD CONSTRAINT UQ_ServiceCaseAssignment_01 UNIQUE (case_type, case_id, effective_from);
 ALTER TABLE dbo.NotificationLog         ADD CONSTRAINT UQ_NotificationLog_01 UNIQUE (business_type, business_id, recipient_account_id, event_code);
 ALTER TABLE dbo.StaffStationAssignment  ADD CONSTRAINT UQ_StaffStationAssignment_01 UNIQUE (staff_id, station_id, effective_from);
@@ -22,7 +22,7 @@ ALTER TABLE dbo.SettlementCarryoverAdjustment ADD CONSTRAINT UQ_SettlementCarryo
 GO
 
 -- =============================================================
--- 1. 外键（按依赖顺序：R → C → D）
+-- 外键（按依赖顺序：R → C → D）
 -- =============================================================
 
 -- ---- R 线 ----
@@ -94,7 +94,7 @@ ALTER TABLE dbo.SettlementReviewCase    ADD CONSTRAINT FK_SettlementReviewCase_a
 GO
 
 -- =============================================================
--- 2. 普通索引 + 过滤唯一索引（UQ 约束已在上方/建表时创建）
+-- 普通索引 + 过滤唯一索引
 -- =============================================================
 
 -- ---- R 线 ----

@@ -21,7 +21,7 @@ ORDER BY op.operator_name, s.station_id;
 -- =============================================================
 -- Q02（B）某场站近 30 天分时段充电电量与收入构成
 -- 关系：ChargingStation + ChargingOrder + OrderFeeDetail + BillingRule（4 表）
--- 参数：场站编号、日期范围（此处以 ST-001 近 30 天为例）
+-- 参数：场站编号、日期范围（此处以 B_DEMO_ST01 近 30 天为例）
 -- =============================================================
 SELECT b.period_type,
        SUM(o.energy_kwh)                                          AS total_energy_kwh,
@@ -31,7 +31,7 @@ FROM dbo.ChargingOrder o
 JOIN dbo.ChargingStation s ON s.station_id = o.opening_station_id
 JOIN dbo.OrderFeeDetail  f ON f.order_id = o.order_id
 JOIN dbo.BillingRule     b ON b.billing_rule_id = f.billing_rule_id
-WHERE s.station_id = 'ST-001'
+WHERE s.station_id = 'B_DEMO_ST01'
   AND o.end_time >= DATEADD(day, -30, SYSDATETIME())
   AND o.status IN ('PENDING_PAYMENT','PAID')
 GROUP BY b.period_type
@@ -72,7 +72,7 @@ JOIN dbo.AlarmCodeDict d ON a.alarm_code = d.alarm_code
 JOIN dbo.AlarmLevelPolicy lv ON a.alarm_level = lv.alarm_level
 LEFT JOIN dbo.WorkOrder w ON w.alarm_id = a.alarm_id
 LEFT JOIN dbo.StaffProfile eng ON w.engineer_staff_id = eng.staff_id
-WHERE s.station_id = 'ST-001'
+WHERE s.station_id = 'B_DEMO_ST01'
 ORDER BY a.occurred_at DESC;
 
 -- =============================================================
@@ -81,7 +81,7 @@ ORDER BY a.occurred_at DESC;
 --       + ReconciliationDifference + SettlementInvoice（6 表）
 -- 从表用标量子查询聚合，避免一行多票/多差异导致行爆炸
 -- =============================================================
-DECLARE @period_month CHAR(6) = '202611';
+DECLARE @period_month CHAR(6) = '202610';
 
 SELECT op.operator_id, op.operator_name, l.station_id, l.station_name, l.period_month,
        l.detail_count, l.gross_amount, l.platform_fee,

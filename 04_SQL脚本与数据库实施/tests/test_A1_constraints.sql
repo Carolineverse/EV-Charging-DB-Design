@@ -1,5 +1,4 @@
--- A1 核心约束回归测试（SQL Server / SSMS）
--- 覆盖：Operator CHECK、ChargingGun UNIQUE、ChargingPile FK、DeviceStatusHistory CHECK（两种非法情况）
+-- A1 核心约束回归测试  覆盖：Operator CHECK、ChargingGun UNIQUE、ChargingPile FK、DeviceStatusHistory CHECK（两种非法情况）
 -- 前提：A1 七张表、七个内部外键已安装；只允许在 EV_B_TEST 执行。
 -- 安全：所有成功插入的夹具数据均在同一事务中回滚；不在生产库运行。
 -- 执行方式：先在 SSMS 选择 EV_B_TEST；不要把 USE 固定在脚本里。

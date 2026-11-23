@@ -1,4 +1,4 @@
-﻿DECLARE @period_month CHAR(6) = '202611';
+﻿DECLARE @period_month CHAR(6) = '202610';
 
 SELECT l.operator_id, l.operator_name, l.station_id, l.station_name, l.period_month,
        l.detail_count, l.gross_amount, l.platform_fee,

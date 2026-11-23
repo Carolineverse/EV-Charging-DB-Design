@@ -8,6 +8,7 @@ IF DB_NAME() <> N'EV_B_TEST'
     THROW 51200, 'This test must run in EV_B_TEST.', 1;
 
 DECLARE @Token VARCHAR(10) = LEFT(REPLACE(CONVERT(VARCHAR(36), NEWID()), '-', ''), 10);
+DECLARE @UserId VARCHAR(20) = 'TST_Q02_U' + @Token;
 DECLARE @OperatorId VARCHAR(20) = 'Q02OP' + @Token;
 DECLARE @StationId VARCHAR(20) = 'Q02ST' + @Token;
 DECLARE @PileId VARCHAR(20) = 'Q02PL' + @Token;
@@ -33,6 +34,27 @@ DECLARE @Actual TABLE
 BEGIN TRY
     BEGIN TRANSACTION;
 
+    -- Complete the R-domain parents using the installed roles and this test's own identities.
+    DECLARE @FixtureAccounts TABLE (username VARCHAR(50) PRIMARY KEY, account_id BIGINT NOT NULL);
+    INSERT INTO dbo.SysAccount (username, password_hash, role_id)
+    OUTPUT INSERTED.username, INSERTED.account_id INTO @FixtureAccounts (username, account_id)
+    SELECT f.username, 'REPLACE_WITH_REAL_PASSWORD_HASH', r.role_id
+    FROM (VALUES
+        ('TST_Q02_A' + @Token, 'R01'),
+        (@UserId, 'R04')
+    ) f(username, role_code)
+    JOIN dbo.SysRole r ON r.role_code = f.role_code;
+    IF @@ROWCOUNT <> 2
+        THROW 52990, 'Install the required R roles before running this fixture.', 1;
+    DECLARE @NoticeAccountId BIGINT = (SELECT account_id FROM @FixtureAccounts WHERE username = 'TST_Q02_A' + @Token);
+
+    INSERT INTO dbo.UserProfile
+        (user_id, account_id, phone_ciphertext, phone_hash, real_name_status, registered_at, status)
+    SELECT f.username, f.account_id, 0x00, CONVERT(CHAR(64), HASHBYTES('SHA2_256', f.username), 2),
+           'UNVERIFIED', '2026-01-01', 'ACTIVE'
+    FROM @FixtureAccounts f
+    WHERE f.username IN (@UserId);
+
     INSERT INTO dbo.Operator (operator_id, operator_name)
     VALUES (@OperatorId, N'Q02测试运营商');
 
@@ -41,7 +63,7 @@ BEGIN TRY
          total_spaces, business_hours, parking_fee_standard, workorder_notice_account_id)
     VALUES
         (@StationId, N'Q02测试场站', N'测试地址', 116.400000, 39.900000, @OperatorId,
-         1, N'00:00-24:00', N'测试', 1);
+         1, N'00:00-24:00', N'测试', @NoticeAccountId);
 
     INSERT INTO dbo.ChargingPile
         (pile_id, station_id, device_model, rated_power_kw, communication_protocol,
@@ -82,7 +104,7 @@ BEGIN TRY
         (order_type, user_id, gun_id, start_time, end_time, energy_kwh, status,
          opening_station_id, startup_rule_version_id)
     VALUES
-        ('PERSONAL', 'Q02_TEST_USER', @GunId, '2026-10-15T11:58:00',
+        ('PERSONAL', @UserId, @GunId, '2026-10-15T11:58:00',
          '2026-10-15T12:01:00', 0.015, 'PENDING_PAYMENT', @StationId, @RuleVersionId);
     SET @OrderId = CONVERT(BIGINT, SCOPE_IDENTITY());
 
@@ -100,7 +122,7 @@ BEGIN TRY
         (order_type, user_id, gun_id, start_time, end_time, energy_kwh, status,
          opening_station_id, startup_rule_version_id)
     VALUES
-        ('PERSONAL', 'Q02_TEST_USER', @GunId, '2026-10-14T11:58:00',
+        ('PERSONAL', @UserId, @GunId, '2026-10-14T11:58:00',
          '2026-10-14T11:59:00', 0.005, 'PENDING_PAYMENT', @StationId, @RuleVersionId);
     SET @OutsideOrderId = CONVERT(BIGINT, SCOPE_IDENTITY());
 

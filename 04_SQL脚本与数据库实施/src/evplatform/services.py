@@ -96,17 +96,85 @@ def close_review_case(review_case_id, resolution, resolved_by):
         s.commit()
 
 
+_ACTIVE_GRANT = """
+    FROM dbo.SysAccount AS a
+    JOIN dbo.SysRole AS r ON r.role_id = a.role_id AND r.status = 1
+    JOIN dbo.RolePermission AS rp ON rp.role_id = r.role_id AND rp.status = 1
+    JOIN dbo.SysPermission AS p ON p.permission_id = rp.permission_id AND p.status = 1
+    WHERE a.account_id = :account_id AND a.status = 1
+      AND (a.locked_until IS NULL OR a.locked_until <= SYSDATETIME())
+"""
+
+_STATION_SCOPE = {
+    "ALL": "1 = 1",
+    "PUBLIC": "s.status = 'OPERATING'",
+    "ASSIGNED": """
+        EXISTS (
+            SELECT 1
+            FROM dbo.StaffProfile AS f
+            JOIN dbo.StaffStationAssignment AS g ON g.staff_id = f.staff_id
+            WHERE f.account_id = a.account_id AND f.employment_status = 'ACTIVE'
+              AND g.station_id = s.station_id AND g.effective_from <= SYSDATETIME()
+              AND (g.effective_to IS NULL OR g.effective_to > SYSDATETIME())
+        )
+    """,
+    "SELF": """
+        EXISTS (
+            SELECT 1
+            FROM dbo.UserProfile AS u
+            JOIN dbo.ChargingOrder AS o ON o.user_id = u.user_id
+            WHERE u.account_id = a.account_id AND u.status = 'ACTIVE'
+              AND o.order_type = 'PERSONAL' AND o.opening_station_id = s.station_id
+        )
+    """,
+    "ENTERPRISE": """
+        EXISTS (
+            SELECT 1
+            FROM dbo.EnterpriseProfile AS e
+            JOIN dbo.EnterpriseCard AS c ON c.enterprise_id = e.enterprise_id
+            JOIN dbo.EnterpriseCardBinding AS b ON b.enterprise_card_id = c.enterprise_card_id
+            JOIN dbo.ChargingOrder AS o ON o.binding_id = b.binding_id
+            WHERE e.account_id = a.account_id AND e.status = 'ACTIVE'
+              AND o.order_type = 'ENTERPRISE' AND o.opening_station_id = s.station_id
+        )
+    """,
+}
+
+
 def has_permission(account_id, permission_code):
-    """公共权限读取：当前账号是否拥有某权限（仅返回布尔，数据范围由调用方按需解析）。"""
+    """Check an active account, role and permission grant."""
     with SessionLocal() as s:
-        n = s.execute(text(
-            "SELECT COUNT(*) FROM dbo.RolePermission rp "
-            "JOIN dbo.SysAccount a ON a.role_id = rp.role_id "
-            "JOIN dbo.SysPermission p ON p.permission_id = rp.permission_id "
-            "WHERE a.account_id = :a AND p.permission_code = :pc "
-            "AND a.status = 1 AND rp.status = 1 AND p.status = 1"),
-            {"a": account_id, "pc": permission_code}).scalar_one()
-    return n > 0
+        return s.execute(
+            text(f"SELECT 1 {_ACTIVE_GRANT} AND p.permission_code = :permission_code"),
+            {"account_id": account_id, "permission_code": permission_code},
+        ).first() is not None
+
+
+def _station_scope_query(predicate, permission_clause=""):
+    return f"""
+        SELECT s.station_id FROM dbo.ChargingStation AS s
+        WHERE EXISTS (
+            SELECT 1 {_ACTIVE_GRANT} AND ({predicate}) {permission_clause}
+        )
+    """
+
+
+def filter_by_scope(account_id, scope, *, permission_code=None):
+    """Return the station projection of an active grant.
+
+    SELF uses personal order history and ENTERPRISE uses the enterprise's card
+    bindings. This projection alone does not authorize individual business records.
+    Pass a permission code when exposing a particular operation.
+    """
+    predicate = _STATION_SCOPE.get(scope)
+    if predicate is None:
+        return set()
+    permission_clause = "AND p.permission_code = :permission_code" if permission_code is not None else ""
+    query = _station_scope_query(f"rp.data_scope = :scope AND ({predicate})", permission_clause)
+    with SessionLocal() as s:
+        return set(s.execute(
+            text(query), {"account_id": account_id, "scope": scope, "permission_code": permission_code},
+        ).scalars())
 
 
 def settle_ledger(settlement_id):
@@ -117,7 +185,20 @@ def settle_ledger(settlement_id):
     return dict(zip(("gross_amount", "platform_fee", "adjustment_amount", "payable_amount"), row))
 
 
-def paginate_alarms(page=1, size=10):
+def paginate_alarms(page=1, size=10, *, account_id):
+    """Paginate only alarms covered by the account's ALARM_VIEW grant."""
+    if page < 1 or size < 1:
+        raise ValueError("page and size must be positive")
+    stations = _station_scope_query(
+        f"rp.data_scope = 'ALL' OR (rp.data_scope = 'ASSIGNED' AND ({_STATION_SCOPE['ASSIGNED']}))",
+        "AND p.permission_code = 'ALARM_VIEW'",
+    )
+    visible_pile = text(f"""
+        EXISTS (
+            SELECT 1 FROM dbo.ChargingPile AS pile
+            WHERE pile.pile_id = dbo.Alarm.pile_id AND pile.station_id IN ({stations})
+        )
+    """)
     with SessionLocal() as s:
-        stmt = select(Alarm).order_by(Alarm.alarm_id).offset((page - 1) * size).limit(size)
-        return s.execute(stmt).scalars().all()
+        stmt = select(Alarm).where(visible_pile).order_by(Alarm.alarm_id).offset((page - 1) * size).limit(size)
+        return s.execute(stmt, {"account_id": account_id}).scalars().all()

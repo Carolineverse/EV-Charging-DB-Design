@@ -150,6 +150,9 @@ def test_order_page_uses_created_time_then_order_id_as_stable_sort(
         second = list_orders_page(session, user_id=business_fixture["user_id"], page=2, page_size=2)
 
     expected = sorted(created_ids, reverse=True)
-    assert first.total == second.total == 3
+    # 联调库中业务夹具用户已有历史订单，总数不能写死为 3；只验证两页一致、
+    # 新建记录因 created_at 更晚而排在最前，且同创建时间时按 order_id 降序稳定排序。
+    assert first.total == second.total
+    assert first.total >= 3
     assert [order.order_id for order in first.items] == expected[:2]
-    assert [order.order_id for order in second.items] == expected[2:]
+    assert second.items[0].order_id == expected[2]

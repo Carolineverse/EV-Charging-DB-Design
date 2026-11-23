@@ -1,6 +1,5 @@
 -- =============================================================
--- C 线种子（适配 B_DEMO_* / D_DEMO_* 真实编号）
--- 前置：r_base、50_B_demo_settlement_data、60_D_demo_bulk_data 已执行
+-- C 线种子 前置：r_base、50_B_demo_settlement_data、60_D_demo_bulk_data 已执行
 -- =============================================================
 SET NOCOUNT ON;
 SET XACT_ABORT ON;

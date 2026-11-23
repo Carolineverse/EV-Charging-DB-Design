@@ -6,7 +6,7 @@ FROM dbo.DeviceReport r
 LEFT JOIN dbo.DeviceMonitoringData m ON m.report_id = r.report_id;
 GO
 
--- [C] 2. 待处理告警
+-- [C] 待处理告警
 CREATE VIEW dbo.v_PendingAlarm AS
 SELECT a.alarm_id, a.pile_id, a.gun_id, a.alarm_code, d.alarm_name, d.target_type,
        lv.level_name, a.alarm_level, a.alarm_description, a.alarm_source,
@@ -17,7 +17,7 @@ JOIN dbo.AlarmLevelPolicy lv ON a.alarm_level = lv.alarm_level
 WHERE a.status IN ('PENDING','PENDING_VERIFY');
 GO
 
--- [C] 3. 工单处置进度
+-- [C] 工单处置进度
 CREATE VIEW dbo.v_WorkOrderProgress AS
 SELECT w.work_order_id, w.alarm_id, w.status AS workorder_status,
        w.assigned_at, w.accept_deadline, w.accepted_at, w.arrival_deadline, w.arrival_at,
@@ -30,7 +30,7 @@ LEFT JOIN dbo.StaffProfile eng ON w.engineer_staff_id = eng.staff_id
 LEFT JOIN dbo.StaffProfile disp ON w.dispatcher_staff_id = disp.staff_id;
 GO
 
--- [D] 4. 结算台账
+-- [D] 结算台账
 CREATE VIEW dbo.v_SettlementLedger AS
 SELECT s.settlement_id, s.station_id, st.station_name, op.operator_id, op.operator_name,
        s.period_month, s.platform_rate, d.detail_count,
@@ -60,7 +60,7 @@ OUTER APPLY (
 ) c;
 GO
 
--- [D] 5. 逐单差异追溯
+-- [D] 逐单差异追溯
 CREATE VIEW dbo.v_SettlementDifference AS
 SELECT r.difference_id, r.settlement_id, r.order_id, r.difference_type, r.difference_amount,
        r.status, r.resolution, r.operator_evidence, r.created_at, r.reviewed_at,
@@ -70,7 +70,7 @@ FROM dbo.ReconciliationDifference r
 JOIN dbo.SettlementDetail d ON d.settlement_id = r.settlement_id AND d.order_id = r.order_id;
 GO
 
--- [D] 6. 开票余额与红冲追溯
+-- [D] 开票余额与红冲追溯
 CREATE VIEW dbo.v_InvoiceBalanceAndRed AS
 SELECT l.settlement_id, l.payable_amount, COALESCE(t.effective_amount, 0) AS effective_amount,
        l.payable_amount - CAST(COALESCE(t.effective_amount, 0) AS DECIMAL(28,2)) AS invoice_balance,

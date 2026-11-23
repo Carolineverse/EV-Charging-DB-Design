@@ -1,5 +1,4 @@
 -- V07 回归测试：覆盖会员/钱包双有、钱包单有及会员单有的 A2 用户。
--- 所有夹具在 EV_B_TEST 的事务中回滚；不依赖 R.UserProfile。
 
 SET NOCOUNT ON;
 SET XACT_ABORT OFF;
@@ -11,13 +10,34 @@ IF OBJECT_ID(N'dbo.v_A2MemberWalletSummary', N'V') IS NULL
 
 DECLARE @Token VARCHAR(10) = LEFT(REPLACE(CONVERT(VARCHAR(36), NEWID()), '-', ''), 10);
 DECLARE @LevelId VARCHAR(20) = 'V07LV' + @Token;
-DECLARE @UserBoth VARCHAR(20) = 'V07A' + @Token;
-DECLARE @UserWalletOnly VARCHAR(20) = 'V07B' + @Token;
-DECLARE @UserLevelOnly VARCHAR(20) = 'V07C' + @Token;
+DECLARE @UserBoth VARCHAR(20) = 'TST_V07_A' + @Token;
+DECLARE @UserWalletOnly VARCHAR(20) = 'TST_V07_B' + @Token;
+DECLARE @UserLevelOnly VARCHAR(20) = 'TST_V07_C' + @Token;
 DECLARE @LevelName NVARCHAR(30) = N'V07等级' + @Token;
 
 BEGIN TRY
     BEGIN TRANSACTION;
+
+    -- Complete the R-domain parents using the installed roles and this test's own identities.
+    DECLARE @FixtureAccounts TABLE (username VARCHAR(50) PRIMARY KEY, account_id BIGINT NOT NULL);
+    INSERT INTO dbo.SysAccount (username, password_hash, role_id)
+    OUTPUT INSERTED.username, INSERTED.account_id INTO @FixtureAccounts (username, account_id)
+    SELECT f.username, 'REPLACE_WITH_REAL_PASSWORD_HASH', r.role_id
+    FROM (VALUES
+        (@UserBoth, 'R04'),
+        (@UserWalletOnly, 'R04'),
+        (@UserLevelOnly, 'R04')
+    ) f(username, role_code)
+    JOIN dbo.SysRole r ON r.role_code = f.role_code;
+    IF @@ROWCOUNT <> 3
+        THROW 52990, 'Install the required R roles before running this fixture.', 1;
+
+    INSERT INTO dbo.UserProfile
+        (user_id, account_id, phone_ciphertext, phone_hash, real_name_status, registered_at, status)
+    SELECT f.username, f.account_id, 0x00, CONVERT(CHAR(64), HASHBYTES('SHA2_256', f.username), 2),
+           'UNVERIFIED', '2026-01-01', 'ACTIVE'
+    FROM @FixtureAccounts f
+    WHERE f.username IN (@UserBoth, @UserWalletOnly, @UserLevelOnly);
 
     INSERT INTO dbo.MemberLevel (member_level_id, level_name, level_sort, status)
     VALUES (@LevelId, @LevelName, 987650000, 'ACTIVE');

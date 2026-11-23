@@ -1,10 +1,6 @@
 -- =============================================================
 -- [D] 生成站月结算单（依赖 B 的 v_OrderSettlementSource + R 的事项分派）
 -- 权限：该场站|账期必须已分派给 @assigned_account_id，且生成人即获派专员
--- 接口约定（B 的视图必须按此列名）：
---   order_id, station_id, settlement_source(PERSONAL/ENTERPRISE), ended_at,
---   settled_at, energy_kwh, electricity_base, service_base, minimum_adjustment,
---   refund_state_snapshot(NONE/FAILED_CANCELLED), is_settleable(BIT), unsettleable_reason
 -- =============================================================
 CREATE PROCEDURE dbo.usp_GenerateSettlement
     @station_id          VARCHAR(20),

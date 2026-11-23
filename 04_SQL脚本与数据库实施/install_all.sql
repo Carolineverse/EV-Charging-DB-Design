@@ -20,6 +20,10 @@ IF SYSDATETIME() < DATEADD(MONTH, 1, DATEFROMPARTS(2026, 10, 1))
     THROW 50164, N'202610 账期尚未结束，须在 2026 年 11 月 1 日或之后安装', 1;
 GO
 
+-- 安装前从 SQLCMD 环境提供 EV_MASTER_KEY_PASSWORD。
+:r sql\security\00_crypto_keys.sql
+:r sql\security\usp_encrypt_decrypt.sql
+
 -- 1) 建表（R/C/D 先建，B 的表有外键指向 R/C）
 :r sql\schema\r_core.sql
 :r sql\schema\c_partition.sql
@@ -64,6 +68,7 @@ GO
 :r sql\seed\60_D_demo_bulk_data.sql
 :r sql\seed\c_base_integration.sql
 :r sql\seed\d_base.sql
+:r sql\seed\70_integration_coverage.sql
 
 -- 6) 校验演示链路的落库结果，按站点和业务编号限定范围。
 DECLARE @statements TABLE (id BIGINT PRIMARY KEY, station_id VARCHAR(20), period_month CHAR(6));
@@ -106,7 +111,7 @@ DECLARE @review_cases INT = (
 );
 SELECT @statement_count AS statements, @details AS details, @carryovers AS applied_carryovers,
        @differences AS closed_differences, @invoices AS blue_invoices, @review_cases AS review_cases;
-IF @statement_count <> 25 OR @details < 25 OR @carryovers <> 20
-   OR @differences < 20 OR @invoices < 20 OR @review_cases <> 20
+IF @statement_count <> 25 OR @details <> 28 OR @carryovers <> 20
+   OR @differences <> 20 OR @invoices <> 20 OR @review_cases <> 20
     THROW 50165, N'联调结果未满足数量要求，请查看各项实际计数', 1;
 GO

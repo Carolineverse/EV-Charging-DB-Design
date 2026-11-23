@@ -43,13 +43,18 @@ BEGIN TRY
             (@FleetMemberId, @EnterpriseId, @UserId, 'B-DEMO-MEMBER-01', '2026-01-01T00:00:00');
 
     IF NOT EXISTS (SELECT 1 FROM dbo.Vehicle WHERE vehicle_id = @VehicleId)
+    BEGIN
+        DECLARE @Plate NVARCHAR(8) = N'京A12345';
+        DECLARE @PlateCipher VARBINARY(256);
+        EXEC dbo.usp_EncryptSensitive @Plate, @PlateCipher OUTPUT;
         INSERT INTO dbo.Vehicle
             (vehicle_id, user_id, enterprise_id, plate_ciphertext, plate_hash,
              vehicle_model, battery_capacity_kwh, max_charging_power_kw, status)
         VALUES
-            (@VehicleId, NULL, @EnterpriseId, 0x01,
-             CONVERT(CHAR(64), HASHBYTES('SHA2_256', @VehicleId), 2),
+            (@VehicleId, NULL, @EnterpriseId, @PlateCipher,
+             CONVERT(CHAR(64), HASHBYTES('SHA2_256', @Plate), 2),
              N'B 企业演示车辆', 70.00, 100.00, 'ACTIVE');
+    END;
 
     IF NOT EXISTS (SELECT 1 FROM dbo.EnterpriseCard WHERE enterprise_card_id = @CardId)
         INSERT INTO dbo.EnterpriseCard

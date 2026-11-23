@@ -22,6 +22,21 @@ DECLARE @ReviewedAt DATETIME2(3) = '2026-10-15T10:00:00';
 BEGIN TRY
     BEGIN TRANSACTION;
 
+    -- Complete the R-domain parents using the installed roles and this test's own identities.
+    DECLARE @FixtureAccounts TABLE (username VARCHAR(50) PRIMARY KEY, account_id BIGINT NOT NULL);
+    INSERT INTO dbo.SysAccount (username, password_hash, role_id)
+    OUTPUT INSERTED.username, INSERTED.account_id INTO @FixtureAccounts (username, account_id)
+    SELECT f.username, 'REPLACE_WITH_REAL_PASSWORD_HASH', r.role_id
+    FROM (VALUES
+        ('TST_V03_A' + @Token, 'R01'),
+        ('TST_V03_S' + @Token, 'R02')
+    ) f(username, role_code)
+    JOIN dbo.SysRole r ON r.role_code = f.role_code;
+    IF @@ROWCOUNT <> 2
+        THROW 52990, 'Install the required R roles before running this fixture.', 1;
+    DECLARE @NoticeAccountId BIGINT = (SELECT account_id FROM @FixtureAccounts WHERE username = 'TST_V03_A' + @Token);
+    DECLARE @SubmitterAccountId BIGINT = (SELECT account_id FROM @FixtureAccounts WHERE username = 'TST_V03_S' + @Token);
+
     INSERT INTO dbo.Operator (operator_id, operator_name)
     VALUES (@OperatorId, N'V03测试运营商');
 
@@ -30,7 +45,7 @@ BEGIN TRY
          total_spaces, business_hours, parking_fee_standard, workorder_notice_account_id)
     VALUES
         (@StationId, N'V03当前场站', N'测试地址', 116.400000, 39.900000, @OperatorId,
-         1, N'00:00-24:00', N'测试', 1);
+         1, N'00:00-24:00', N'测试', @NoticeAccountId);
 
     INSERT INTO dbo.ChargingPile
         (pile_id, station_id, device_model, rated_power_kw, communication_protocol,
@@ -49,8 +64,8 @@ BEGIN TRY
         (pile_id, gun_id, case_type, submitted_by, submitted_at, details,
          status, reviewed_by, reviewed_at, decision)
     VALUES
-        (@PileId, @GunId, 'INSPECTION', 101, @SubmittedAt, N'V03测试设备事项',
-         'APPROVED', 202, @ReviewedAt, N'V03测试审核意见');
+        (@PileId, @GunId, 'INSPECTION', @SubmitterAccountId, @SubmittedAt, N'V03测试设备事项',
+         'APPROVED', @NoticeAccountId, @ReviewedAt, N'V03测试审核意见');
     SET @AssetCaseId = CONVERT(BIGINT, SCOPE_IDENTITY());
 
     IF (SELECT COUNT(*) FROM dbo.v_A1AssetCaseTrace
@@ -63,8 +78,8 @@ BEGIN TRY
           AND pile_id = @PileId AND gun_id = @GunId
           AND current_station_id = @StationId
           AND current_station_name = N'V03当前场站'
-          AND submitted_by = 101 AND submitted_at = @SubmittedAt
-          AND case_status = 'APPROVED' AND reviewed_by = 202
+          AND submitted_by = @SubmitterAccountId AND submitted_at = @SubmittedAt
+          AND case_status = 'APPROVED' AND reviewed_by = @NoticeAccountId
           AND reviewed_at = @ReviewedAt AND decision = N'V03测试审核意见')
         THROW 51503, 'V03 lost or changed the asset case trace fields.', 1;
 

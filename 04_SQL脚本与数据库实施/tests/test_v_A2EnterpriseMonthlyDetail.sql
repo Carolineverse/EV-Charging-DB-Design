@@ -17,11 +17,12 @@ IF OBJECT_ID(N'dbo.v_A2EnterpriseMonthlyDetail', N'V') IS NULL
     THROW 52101, 'Install dbo.v_A2EnterpriseMonthlyDetail before this test.', 1;
 
 DECLARE @Token VARCHAR(10) = LEFT(REPLACE(CONVERT(VARCHAR(36), NEWID()), '-', ''), 10);
+DECLARE @UserId VARCHAR(20) = 'TST_V09_U' + @Token;
 DECLARE @OperatorId VARCHAR(20) = 'V09OP' + @Token;
 DECLARE @StationId VARCHAR(20) = 'V09ST' + @Token;
 DECLARE @PileId VARCHAR(20) = 'V09PL' + @Token;
 DECLARE @GunId VARCHAR(20) = 'V09GN' + @Token;
-DECLARE @EnterpriseId VARCHAR(20) = 'V09E' + @Token;
+DECLARE @EnterpriseId VARCHAR(20) = 'TST_V09_E' + @Token;
 DECLARE @FleetMemberId VARCHAR(20) = 'V09FM' + @Token;
 DECLARE @VehicleId VARCHAR(20) = 'V09VE' + @Token;
 DECLARE @CardId VARCHAR(20) = 'V09CA' + @Token;
@@ -35,6 +36,36 @@ DECLARE @NovOrderId BIGINT;
 BEGIN TRY
     BEGIN TRANSACTION;
 
+    -- Complete the R-domain parents using the installed roles and this test's own identities.
+    DECLARE @FixtureAccounts TABLE (username VARCHAR(50) PRIMARY KEY, account_id BIGINT NOT NULL);
+    INSERT INTO dbo.SysAccount (username, password_hash, role_id)
+    OUTPUT INSERTED.username, INSERTED.account_id INTO @FixtureAccounts (username, account_id)
+    SELECT f.username, 'REPLACE_WITH_REAL_PASSWORD_HASH', r.role_id
+    FROM (VALUES
+        ('TST_V09_A' + @Token, 'R01'),
+        (@UserId, 'R04'),
+        (@EnterpriseId, 'R05')
+    ) f(username, role_code)
+    JOIN dbo.SysRole r ON r.role_code = f.role_code;
+    IF @@ROWCOUNT <> 3
+        THROW 52990, 'Install the required R roles before running this fixture.', 1;
+    DECLARE @NoticeAccountId BIGINT = (SELECT account_id FROM @FixtureAccounts WHERE username = 'TST_V09_A' + @Token);
+
+    INSERT INTO dbo.UserProfile
+        (user_id, account_id, phone_ciphertext, phone_hash, real_name_status, registered_at, status)
+    SELECT f.username, f.account_id, 0x00, CONVERT(CHAR(64), HASHBYTES('SHA2_256', f.username), 2),
+           'UNVERIFIED', '2026-01-01', 'ACTIVE'
+    FROM @FixtureAccounts f
+    WHERE f.username IN (@UserId);
+
+    INSERT INTO dbo.EnterpriseProfile
+        (enterprise_id, account_id, enterprise_name, credit_code, contact_name, contact_phone_ciphertext, status)
+    SELECT v.enterprise_id, f.account_id, N'Test enterprise', v.credit_code, N'Test contact', 0x00, 'ACTIVE'
+    FROM (VALUES
+        (@EnterpriseId, 'TST_V09E' + @Token)
+    ) v(enterprise_id, credit_code)
+    JOIN @FixtureAccounts f ON f.username = v.enterprise_id;
+
     INSERT INTO dbo.Operator (operator_id, operator_name)
     VALUES (@OperatorId, N'V09测试运营商');
     INSERT INTO dbo.ChargingStation
@@ -42,7 +73,7 @@ BEGIN TRY
          total_spaces, business_hours, parking_fee_standard, workorder_notice_account_id)
     VALUES
         (@StationId, N'V09测试场站', N'测试地址', 116.400000, 39.900000, @OperatorId,
-         1, N'00:00-24:00', N'测试', 1);
+         1, N'00:00-24:00', N'测试', @NoticeAccountId);
     INSERT INTO dbo.ChargingPile
         (pile_id, station_id, device_model, rated_power_kw, communication_protocol,
          commissioned_date, warranty_end_date, status)
@@ -55,7 +86,7 @@ BEGIN TRY
         (@GunId, @PileId, 1, 'DC_FAST', N'GB/T', 60.00, 'IDLE');
 
     INSERT INTO dbo.FleetMember (fleet_member_id, enterprise_id, user_id, member_no)
-    VALUES (@FleetMemberId, @EnterpriseId, 'V09U' + @Token, 'V09-MEMBER');
+    VALUES (@FleetMemberId, @EnterpriseId, @UserId, 'V09-MEMBER');
     INSERT INTO dbo.Vehicle
         (vehicle_id, user_id, enterprise_id, plate_ciphertext, plate_hash,
          vehicle_model, battery_capacity_kwh, max_charging_power_kw)
@@ -80,7 +111,7 @@ BEGIN TRY
          start_time, end_time, energy_kwh, status, gross_amount,
          opening_station_id, settled_at, priced_at)
     VALUES
-        ('ENTERPRISE', 'V09U' + @Token, @GunId, @BindingId, @QuotaId,
+        ('ENTERPRISE', @UserId, @GunId, @BindingId, @QuotaId,
          '2026-10-15T10:00:00', '2026-10-15T11:00:00', 1.000, 'PAID', 5.00,
          @StationId, '2026-10-15T11:05:00', '2026-10-15T11:04:00');
     SET @OctOrderId = CONVERT(BIGINT, SCOPE_IDENTITY());
@@ -90,7 +121,7 @@ BEGIN TRY
          start_time, end_time, energy_kwh, status, gross_amount,
          opening_station_id, settled_at, priced_at)
     VALUES
-        ('ENTERPRISE', 'V09U' + @Token, @GunId, @BindingId, @QuotaId,
+        ('ENTERPRISE', @UserId, @GunId, @BindingId, @QuotaId,
          '2026-10-31T23:00:00', '2026-10-31T23:59:00', 1.000, 'PAID', 5.00,
          @StationId, '2026-10-31T23:59:00', '2026-10-31T23:58:00');
     SET @NovOrderId = CONVERT(BIGINT, SCOPE_IDENTITY());

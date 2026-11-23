@@ -1,12 +1,15 @@
 -- =============================================================
--- 【D 本地自测用】B 线最小夹具（临时）
+-- 【仅供 D 线独立安装使用】B 线最小夹具
+-- 用途：由 install_d_standalone.sql 加载，目标库 EV_D_DEV / EV_D_TEST。
+--       全组联调入口 install_all.sql **不加载本文件**，因此合并库中不会
+--       出现本文件创建的表结构或样例数据。
 -- 说明：D 的 C/D 表外键指向 A1/B 的表（场站、桩、枪、订单、退款）。
---       为了让 D 在 B 交付前能独立装库、生成 20 条结算与测试数据，
+--       为了让 D 在 B 交付前能独立装库、生成 25 条结算与测试数据，
 --       这里按《物理结构设计》建立最小版的这几张表与样例数据。
--- 注意：联调时【删除本文件】，改用 B 的真实建表与种子脚本。
---       本夹具给 ChargingOrder 额外加了 3 个结算基数列（electricity_base /
---       service_base / minimum_adjustment），仅为让 D 的结算演示数据可变，
---       与 B 的真实表结构不同，切勿在合并库中保留。
+-- 注意：本夹具给 ChargingOrder 额外加了 3 个结算基数列（electricity_base /
+--       service_base / minimum_adjustment），与 B 的真实表结构不同；
+--       切勿在全组联调库中执行本文件（表已存在会冲突，列结构也不一致）。
+--       全组联调请使用 B 的正式建表脚本与 50/51 号种子。
 -- =============================================================
 SET NOCOUNT ON;
 
@@ -186,10 +189,13 @@ WHILE @u <= 20
 BEGIN
     INSERT INTO dbo.SysAccount (username, password_hash, role_id)
     VALUES ('user' + RIGHT('000' + CAST(@u AS VARCHAR), 3), 'demo-hash-user', 4);
+    DECLARE @FixturePhone NVARCHAR(11) = CONCAT(N'13800003', RIGHT('000' + CAST(@u AS VARCHAR), 3));
+    DECLARE @FixturePhoneCipher VARBINARY(256);
+    EXEC dbo.usp_EncryptSensitive @FixturePhone, @FixturePhoneCipher OUTPUT;
     INSERT INTO dbo.UserProfile (user_id, account_id, phone_ciphertext, phone_hash, real_name_status, registered_at, status)
     SELECT 'U-' + RIGHT('000' + CAST(@u AS VARCHAR), 3), account_id,
-           CONVERT(varbinary(256), 'PHONE-' + RIGHT('000' + CAST(@u AS VARCHAR), 3)),
-           REPLICATE('0', 64), 'VERIFIED', SYSDATETIME(), 'ACTIVE'
+           @FixturePhoneCipher, CONVERT(CHAR(64), HASHBYTES('SHA2_256', @FixturePhone), 2),
+           'VERIFIED', SYSDATETIME(), 'ACTIVE'
     FROM dbo.SysAccount WHERE username = 'user' + RIGHT('000' + CAST(@u AS VARCHAR), 3);
     SET @u = @u + 1;
 END;
@@ -199,10 +205,13 @@ WHILE @e <= 3
 BEGIN
     INSERT INTO dbo.SysAccount (username, password_hash, role_id)
     VALUES ('ent' + RIGHT('000' + CAST(@e AS VARCHAR), 3), 'demo-hash-ent', 5);
+    DECLARE @FixtureContact NVARCHAR(11) = CONCAT(N'13900003', RIGHT('000' + CAST(@e AS VARCHAR), 3));
+    DECLARE @FixtureContactCipher VARBINARY(256);
+    EXEC dbo.usp_EncryptSensitive @FixtureContact, @FixtureContactCipher OUTPUT;
     INSERT INTO dbo.EnterpriseProfile (enterprise_id, account_id, enterprise_name, credit_code, contact_name, contact_phone_ciphertext, status)
     SELECT 'ENT-' + RIGHT('000' + CAST(@e AS VARCHAR), 3), account_id,
-           N'测试企业' + CAST(@e AS NVARCHAR), REPLICATE('0', 18),
-           N'联系人' + CAST(@e AS NVARCHAR), CONVERT(varbinary(256), 'PHONE-ENT-' + CAST(@e AS VARCHAR)), 'ACTIVE'
+           N'测试企业' + CAST(@e AS NVARCHAR), CONCAT('DDEMO', RIGHT(REPLICATE('0', 13) + CAST(@e AS VARCHAR), 13)),
+           N'联系人' + CAST(@e AS NVARCHAR), @FixtureContactCipher, 'ACTIVE'
     FROM dbo.SysAccount WHERE username = 'ent' + RIGHT('000' + CAST(@e AS VARCHAR), 3);
     SET @e = @e + 1;
 END;

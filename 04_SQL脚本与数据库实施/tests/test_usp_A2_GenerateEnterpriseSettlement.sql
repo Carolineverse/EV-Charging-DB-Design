@@ -17,11 +17,12 @@ IF OBJECT_ID(N'dbo.usp_A2_GenerateEnterpriseSettlement', N'P') IS NULL
     THROW 52501, 'Install dbo.usp_A2_GenerateEnterpriseSettlement before this test.', 1;
 
 DECLARE @Token VARCHAR(10) = LEFT(REPLACE(CONVERT(VARCHAR(36), NEWID()), '-', ''), 10);
+DECLARE @UserId VARCHAR(20) = 'TST_PA2_U' + @Token;
 DECLARE @OperatorId VARCHAR(20) = 'PA2OP' + @Token;
 DECLARE @StationId VARCHAR(20) = 'PA2ST' + @Token;
 DECLARE @PileId VARCHAR(20) = 'PA2PL' + @Token;
 DECLARE @GunId VARCHAR(20) = 'PA2GN' + @Token;
-DECLARE @EnterpriseId VARCHAR(20) = 'PA2E' + @Token;
+DECLARE @EnterpriseId VARCHAR(20) = 'TST_PA2_E' + @Token;
 DECLARE @FleetMemberId VARCHAR(20) = 'PA2FM' + @Token;
 DECLARE @VehicleId VARCHAR(20) = 'PA2VE' + @Token;
 DECLARE @CardId VARCHAR(20) = 'PA2CA' + @Token;
@@ -49,8 +50,40 @@ DECLARE @Output TABLE
 DECLARE @ErrorNumber INT;
 DECLARE @PassCount INT = 0;
 DECLARE @ExpectedCount INT = 6;
+DECLARE @FixtureAccounts TABLE (username VARCHAR(50) PRIMARY KEY, account_id BIGINT NOT NULL);
 
 BEGIN TRY
+    BEGIN TRANSACTION;
+
+    -- Complete the R-domain parents using the installed roles and this test's own identities.
+    INSERT INTO dbo.SysAccount (username, password_hash, role_id)
+    OUTPUT INSERTED.username, INSERTED.account_id INTO @FixtureAccounts (username, account_id)
+    SELECT f.username, 'REPLACE_WITH_REAL_PASSWORD_HASH', r.role_id
+    FROM (VALUES
+        ('TST_PA2_A' + @Token, 'R01'),
+        (@UserId, 'R04'),
+        (@EnterpriseId, 'R05')
+    ) f(username, role_code)
+    JOIN dbo.SysRole r ON r.role_code = f.role_code;
+    IF @@ROWCOUNT <> 3
+        THROW 52990, 'Install the required R roles before running this fixture.', 1;
+    DECLARE @NoticeAccountId BIGINT = (SELECT account_id FROM @FixtureAccounts WHERE username = 'TST_PA2_A' + @Token);
+
+    INSERT INTO dbo.UserProfile
+        (user_id, account_id, phone_ciphertext, phone_hash, real_name_status, registered_at, status)
+    SELECT f.username, f.account_id, 0x00, CONVERT(CHAR(64), HASHBYTES('SHA2_256', f.username), 2),
+           'UNVERIFIED', '2026-01-01', 'ACTIVE'
+    FROM @FixtureAccounts f
+    WHERE f.username IN (@UserId);
+
+    INSERT INTO dbo.EnterpriseProfile
+        (enterprise_id, account_id, enterprise_name, credit_code, contact_name, contact_phone_ciphertext, status)
+    SELECT v.enterprise_id, f.account_id, N'Test enterprise', v.credit_code, N'Test contact', 0x00, 'ACTIVE'
+    FROM (VALUES
+        (@EnterpriseId, 'TST_PA2E' + @Token)
+    ) v(enterprise_id, credit_code)
+    JOIN @FixtureAccounts f ON f.username = v.enterprise_id;
+
     INSERT INTO dbo.Operator (operator_id, operator_name)
     VALUES (@OperatorId, N'P-A2测试运营商');
     INSERT INTO dbo.ChargingStation
@@ -58,7 +91,7 @@ BEGIN TRY
          total_spaces, business_hours, parking_fee_standard, workorder_notice_account_id)
     VALUES
         (@StationId, N'P-A2测试场站', N'测试地址', 116.400000, 39.900000, @OperatorId,
-         1, N'00:00-24:00', N'测试', 1);
+         1, N'00:00-24:00', N'测试', @NoticeAccountId);
     INSERT INTO dbo.ChargingPile
         (pile_id, station_id, device_model, rated_power_kw, communication_protocol,
          commissioned_date, warranty_end_date, status)
@@ -74,7 +107,7 @@ BEGIN TRY
     INSERT INTO dbo.FleetMember
         (fleet_member_id, enterprise_id, user_id, member_no, joined_at)
     VALUES
-        (@FleetMemberId, @EnterpriseId, 'PA2USER' + @Token, 'PA2-MEMBER', '2026-09-01');
+        (@FleetMemberId, @EnterpriseId, @UserId, 'PA2-MEMBER', '2026-09-01');
     INSERT INTO dbo.Vehicle
         (vehicle_id, user_id, enterprise_id, plate_ciphertext, plate_hash,
          vehicle_model, battery_capacity_kwh, max_charging_power_kw)
@@ -109,13 +142,13 @@ BEGIN TRY
          start_time, end_time, energy_kwh, status, gross_amount, discount_amount,
          opening_station_id, settled_at, startup_rule_version_id, priced_at)
     VALUES
-        ('ENTERPRISE', 'PA2USER' + @Token, @GunId, @BindingId, @SeptemberQuotaId,
+        ('ENTERPRISE', @UserId, @GunId, @BindingId, @SeptemberQuotaId,
          '2026-09-30T23:00:00', '2026-10-01T00:30:00', 1.000, 'PAID', 6.00, 2.00,
          @StationId, '2026-10-01T00:31:00', @RuleVersionId, '2026-10-01T00:30:30'),
-        ('ENTERPRISE', 'PA2USER' + @Token, @GunId, @BindingId, @OctoberQuotaId,
+        ('ENTERPRISE', @UserId, @GunId, @BindingId, @OctoberQuotaId,
          '2026-10-31T23:00:00', '2026-11-01T00:30:00', 1.000, 'PAID', 8.00, 1.00,
          @StationId, '2026-11-01T00:31:00', @RuleVersionId, '2026-11-01T00:30:30'),
-        ('ENTERPRISE', 'PA2USER' + @Token, @GunId, @BindingId, @WrongMonthQuotaId,
+        ('ENTERPRISE', @UserId, @GunId, @BindingId, @WrongMonthQuotaId,
          '2026-10-05T10:00:00', '2026-10-05T11:00:00', 1.000, 'PAID', 3.00, 0.00,
          @StationId, '2026-10-05T11:01:00', @RuleVersionId, '2026-10-05T11:00:30');
 
@@ -125,6 +158,8 @@ BEGIN TRY
     WHERE enterprise_quota_id = @OctoberQuotaId;
     SELECT @WrongQuotaOrderId = MIN(order_id) FROM dbo.ChargingOrder
     WHERE enterprise_quota_id = @WrongMonthQuotaId;
+
+    COMMIT TRANSACTION;
 
     EXEC dbo.usp_A2_GenerateEnterpriseSettlement
         @enterprise_settlement_id = @OctoberSettlementId,
@@ -233,6 +268,10 @@ BEGIN TRY
     DELETE FROM dbo.ChargingPile WHERE pile_id = @PileId;
     DELETE FROM dbo.ChargingStation WHERE station_id = @StationId;
     DELETE FROM dbo.Operator WHERE operator_id = @OperatorId;
+    DELETE FROM dbo.UserProfile WHERE user_id = @UserId;
+    DELETE FROM dbo.EnterpriseProfile WHERE enterprise_id = @EnterpriseId;
+    DELETE a FROM dbo.SysAccount a
+    JOIN @FixtureAccounts f ON f.account_id = a.account_id AND f.username = a.username;
 END TRY
 BEGIN CATCH
     IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
@@ -255,5 +294,9 @@ BEGIN CATCH
     DELETE FROM dbo.ChargingPile WHERE pile_id = @PileId;
     DELETE FROM dbo.ChargingStation WHERE station_id = @StationId;
     DELETE FROM dbo.Operator WHERE operator_id = @OperatorId;
+    DELETE FROM dbo.UserProfile WHERE user_id = @UserId;
+    DELETE FROM dbo.EnterpriseProfile WHERE enterprise_id = @EnterpriseId;
+    DELETE a FROM dbo.SysAccount a
+    JOIN @FixtureAccounts f ON f.account_id = a.account_id AND f.username = a.username;
     THROW;
 END CATCH;
