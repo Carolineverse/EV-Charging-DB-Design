@@ -37,7 +37,7 @@
 │  ├─ seed/         种子：r_base 50 51 60 c_base_integration d_base 70 + 独立安装用三份
 │  ├─ queries/      查询：Q01 Q02 Q03 q04 q05 + 合订稿
 │  └─ acceptance/   验收：01 基线导出 02 联调验收 03 基线差集
-├─ src/evplatform/  Python 持久层（11 个模块）
+├─ src/evplatform/  Python 持久层（13 个模块）
 ├─ tests/           pytest 用例 + 20 个 SQL 回归脚本
 ├─ docs/（仓库根）  安全策略、脱敏加密、备份恢复、联调验收、查询执行计划
 └─ scripts/（仓库根）执行计划采集脚本
@@ -185,6 +185,8 @@ Get-ChildItem tests -Filter "test_*.sql" | ForEach-Object {
 | `services.py` | 业务门面：派单、结算生成、差异、终审、开票、红冲、结转、复核、权限判定、场站范围过滤 |
 | `auth.py` | 登录安全：PBKDF2-HMAC-SHA256（10 万轮 + 16 字节随机盐）、失败 5 次锁定、会话超时 |
 | `masking.py` | `mask_phone` / `mask_plate` 展示脱敏 |
+| `stations.py` | A1 业务：`update_device_status`（封装 `usp_A1_UpdateDeviceStatus`）+ `list_stations_page` 场站分页 |
+| `enterprise.py` | A2 企业客户：开卡 / 绑定车辆 / 设置额度 / 申请对公结算或专属价格 / 车队明细分页 / 企业订单结清 / 优惠券适用判定 |
 
 ---
 
