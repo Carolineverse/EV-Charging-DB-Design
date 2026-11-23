@@ -14,6 +14,40 @@ BEGIN TRY
     SELECT s.id, s.name, s.sort
     FROM (VALUES ('L01',N'普通',1),('L02',N'银卡',2),('L03',N'金卡',3)) s(id,name,sort)
     WHERE NOT EXISTS (SELECT 1 FROM dbo.MemberLevel l WHERE l.member_level_id=s.id);
+    -- 保留三档当前业务等级；补充历史会员等级定义供等级迁移追溯。
+    -- 历史等级停用且不绑定用户，不参与优惠资格判断。
+    INSERT INTO dbo.MemberLevel (member_level_id,level_name,level_description,level_sort,status)
+    SELECT s.id,s.name,N'历史停用等级，用于会员等级迁移追溯',s.sort,'INACTIVE'
+    FROM (VALUES
+        ('L04',N'青铜会员',4),('L05',N'白银会员',5),('L06',N'黄金会员',6),
+        ('L07',N'铂金会员',7),('L08',N'钻石会员',8),('L09',N'黑金会员',9),
+        ('L10',N'至尊会员',10),('L11',N'企业标准会员',11),('L12',N'企业VIP会员',12),
+        ('L13',N'合作方A会员',13),('L14',N'合作方B会员',14),('L15',N'年度会员',15),
+        ('L16',N'季度会员',16),('L17',N'月度会员',17),('L18',N'内测A会员',18),
+        ('L19',N'内测B会员',19),('L20',N'单次卡会员',20)
+    ) s(id,name,sort)
+    WHERE NOT EXISTS (SELECT 1 FROM dbo.MemberLevel l WHERE l.member_level_id=s.id);
+
+    -- 原有十个启用故障码保持不变；补充十种有效的实际故障场景。
+    INSERT INTO dbo.AlarmCodeDict
+        (alarm_code,alarm_name,target_type,default_level,description,status,
+         blocks_new_order,normal_observation_count,recovery_rule_description)
+    SELECT s.code,s.name,s.target_type,s.default_level,
+           N'补充的设备故障场景码。','ACTIVE',
+           s.blocks_new_order,3,s.recovery_rule
+    FROM (VALUES
+        ('AL011',N'急停触发','BOTH',3,1,N'排除危险并检查急停回路后复位'),
+        ('AL012',N'接地故障','PILE',3,1,N'修复接地回路并通过接地连续性测试'),
+        ('AL013',N'输出欠压','GUN',2,1,N'检查供电与输出电压，恢复稳定后解除'),
+        ('AL014',N'枪锁故障','GUN',2,1,N'检修电子锁并确认锁止与解锁动作正常'),
+        ('AL015',N'门禁异常','PILE',1,0,N'确认柜门关闭并检查门磁状态'),
+        ('AL016',N'风扇故障','PILE',2,0,N'恢复风扇运行并确认模块温度正常'),
+        ('AL017',N'温度传感器异常','PILE',2,1,N'校准或更换传感器并验证温度读数'),
+        ('AL018',N'电池反接保护','GUN',3,1,N'确认车辆连接极性正确后重新启动'),
+        ('AL019',N'计量偏差超限','GUN',2,0,N'完成计量校验并确认误差回到允许范围'),
+        ('AL020',N'高压互锁断开','GUN',3,1,N'恢复高压互锁回路并通过安全检查')
+    ) s(code,name,target_type,default_level,blocks_new_order,recovery_rule)
+    WHERE NOT EXISTS (SELECT 1 FROM dbo.AlarmCodeDict d WHERE d.alarm_code=s.code);
     IF NOT EXISTS (SELECT 1 FROM dbo.UserMemberLevel WHERE user_id='B_DEMO_USER01')
         INSERT INTO dbo.UserMemberLevel (user_id, member_level_id) VALUES ('B_DEMO_USER01','L01');
 

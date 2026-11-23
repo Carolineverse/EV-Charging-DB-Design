@@ -5,7 +5,7 @@ IF DB_NAME() <> N'EV_B_TEST' THROW 52620, N'Choose EV_B_TEST', 1;
 DECLARE @expected TABLE(table_name SYSNAME PRIMARY KEY, target_rows INT NULL, minimum_rows INT NULL);
 INSERT INTO @expected VALUES
     ('Alarm',NULL,20),
-    ('AlarmCodeDict',NULL,7),
+    ('AlarmCodeDict',20,NULL),
     ('AlarmLevelPolicy',3,NULL),
     ('BillingRule',NULL,20),
     ('BillingRuleVersion',NULL,20),
@@ -32,7 +32,7 @@ INSERT INTO @expected VALUES
     ('EnterpriseSettlementDetail',NULL,20),
     ('FeedbackAlarm',NULL,20),
     ('FleetMember',NULL,20),
-    ('MemberLevel',3,NULL),
+    ('MemberLevel',20,NULL),
     ('NotificationLog',NULL,20),
     ('OperationLog',NULL,20),
     ('Operator',NULL,20),
@@ -303,8 +303,16 @@ IF EXISTS (
     EXCEPT SELECT member_level_id,level_name,level_sort FROM dbo.MemberLevel WHERE status='ACTIVE'
 ) OR NOT EXISTS (
     SELECT 1 FROM dbo.DeviceCommunicationConfig WHERE config_id=1 AND heartbeat_interval_seconds=60 AND offline_threshold_seconds=180
-) OR EXISTS (
-    SELECT code FROM (VALUES ('AL001'),('AL002'),('AL003'),('AL004'),('AL005'),('AL006'),('AL007')) a(code)
+) OR (SELECT COUNT(*) FROM dbo.MemberLevel WHERE status='ACTIVE')<>3
+OR (SELECT COUNT(*) FROM dbo.MemberLevel WHERE status='INACTIVE')<>17
+OR (SELECT COUNT(*) FROM dbo.AlarmCodeDict WHERE status='ACTIVE')<>20
+OR (SELECT COUNT(*) FROM dbo.AlarmCodeDict WHERE status='DISABLED')<>0
+OR EXISTS (
+    SELECT code FROM (VALUES
+        ('AL001'),('AL002'),('AL003'),('AL004'),('AL005'),('AL006'),('AL007'),
+        ('AL008'),('AL009'),('AL010'),('AL011'),('AL012'),('AL013'),('AL014'),
+        ('AL015'),('AL016'),('AL017'),('AL018'),('AL019'),('AL020')
+    ) a(code)
     EXCEPT SELECT alarm_code FROM dbo.AlarmCodeDict WHERE status='ACTIVE'
 ) OR EXISTS (
     SELECT * FROM @matrix EXCEPT SELECT * FROM @actual_grants

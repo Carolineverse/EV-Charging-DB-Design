@@ -206,3 +206,48 @@ def test_concurrent_generation_commits_exactly_one_settlement(engine, settlement
             WHERE settlement_id=:statement OR order_id=:order
         """), {"statement": statement, "order": settlement_case["order"]}).all()
     assert details == [(statement, settlement_case["order"])]
+
+
+class _RollbackSupplement(Exception):
+    pass
+
+
+def test_supplement_detail_adds_eligible_source_and_audit_atomically(engine, settlement_case):
+    with engine.begin() as connection:
+        settlement_id = connection.execute(text("""
+            INSERT dbo.SettlementStatement
+                (station_id,period_month,platform_rate,status,assigned_account_id,created_by)
+            OUTPUT INSERTED.settlement_id
+            VALUES (:key,'202606',0.200000,0,:agent,:agent)
+        """), settlement_case).scalar_one()
+
+    with pytest.raises(_RollbackSupplement):
+        with engine.begin() as connection:
+            connection.exec_driver_sql("BEGIN TRANSACTION")
+            connection.execute(text("""
+                EXEC dbo.usp_SupplementDetail :settlement_id,:order,:agent
+            """), {**settlement_case, "settlement_id": settlement_id})
+            assert connection.execute(text("""
+                SELECT COUNT(*) FROM dbo.SettlementDetail
+                WHERE settlement_id=:settlement_id AND order_id=:order
+            """), {**settlement_case, "settlement_id": settlement_id}).scalar_one() == 1
+            assert connection.execute(text("""
+                SELECT COUNT(*) FROM dbo.OperationLog
+                WHERE module_code='D' AND action_code='SUPPLEMENT_DETAIL'
+                  AND object_id=CONVERT(VARCHAR(50),:settlement_id)
+            """), {"settlement_id": settlement_id}).scalar_one() == 1
+            connection.exec_driver_sql("ROLLBACK TRANSACTION")
+            raise _RollbackSupplement()
+
+    with engine.connect() as connection:
+        assert connection.execute(text("""
+            SELECT COUNT(*) FROM dbo.SettlementStatement WHERE settlement_id=:settlement_id
+        """), {"settlement_id": settlement_id}).scalar_one() == 1
+        assert connection.execute(text("""
+            SELECT COUNT(*) FROM dbo.SettlementDetail WHERE settlement_id=:settlement_id
+        """), {"settlement_id": settlement_id}).scalar_one() == 0
+        assert connection.execute(text("""
+            SELECT COUNT(*) FROM dbo.OperationLog
+            WHERE module_code='D' AND action_code='SUPPLEMENT_DETAIL'
+              AND object_id=CONVERT(VARCHAR(50),:settlement_id)
+        """), {"settlement_id": settlement_id}).scalar_one() == 0
